@@ -16,6 +16,7 @@ let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
 
 const EFFECT_ORDER = [
+    'Neon Fractal Bloom',
     'Sine Wave',
     'Starfield',
     'Hyperspace Glyphs',
@@ -243,6 +244,210 @@ function nextEffect() {
     updateEffectIndicator(); // Update the indicator
     console.log('Switched to effect:', currentEffectIndex, eff && eff.name);
 }
+
+// --- Effect 0: Neon Fractal Bloom (new demoscene raymarch) ---
+const neonFractalBloom = {};
+neonFractalBloom.vsSource = quadVS;
+neonFractalBloom.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Utility
+    mat2 rot2(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    // Hash/noise for subtle grain
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+
+    // Palette distinct from others: cobalt -> neon green -> cyan -> pink
+    vec3 palette(float t){
+        vec3 c1 = vec3(0.10, 0.20, 0.95);
+        vec3 c2 = vec3(0.10, 0.95, 0.30);
+        vec3 c3 = vec3(0.05, 0.95, 0.95);
+        vec3 c4 = vec3(0.95, 0.25, 0.75);
+        if (t < 0.33){
+            float k = smoothstep(0.0, 0.33, t);
+            return mix(c1, c2, k);
+        } else if (t < 0.66){
+            float k = smoothstep(0.33, 0.66, t);
+            return mix(c2, c3, k);
+        } else {
+            float k = smoothstep(0.66, 1.0, t);
+            return mix(c3, c4, k);
+        }
+    }
+
+    // Distance estimator: Mandelbulb-esque
+    float deMandel(vec3 p){
+        vec3 z = p;
+        float dr = 1.0;
+        float r = 0.0;
+        const int ITER = 10;
+        for(int i=0;i<ITER;i++){
+            r = length(z);
+            if (r > 2.5) break;
+            // Spherical coords
+            float theta = acos(clamp(z.z/r, -1.0, 1.0));
+            float phi   = atan(z.y, z.x);
+            float power = 8.0;
+            float r7 = pow(r, power-1.0);
+            dr = r7*power*dr + 1.0;
+
+            // scale and rotate
+            theta *= power;
+            phi   *= power;
+
+            float st = sin(theta), ct = cos(theta);
+            float sp = sin(phi),   cp = cos(phi);
+            z = r7*r * vec3(cp*st, sp*st, ct);
+
+            // domain warp to make it more smokey and unique
+            z += 0.35*sin(vec3(
+                0.9*z.x + 0.6*z.y + 0.5*z.z,
+                0.6*z.x - 0.7*z.y + 0.8*z.z,
+                -0.4*z.x + 0.8*z.y + 0.7*z.z
+            ));
+            z += p;
+        }
+        return 0.5*log(r)*r/dr;
+    }
+
+    // Normal from DE
+    vec3 getNormal(vec3 p){
+        float e = 0.0015;
+        vec2 h = vec2(1.0, -1.0) * 0.5773;
+        return normalize(
+            h.xyy*deMandel(p + h.xyy*e) +
+            h.yyx*deMandel(p + h.yyx*e) +
+            h.yxy*deMandel(p + h.yxy*e) +
+            h.xxx*deMandel(p + h.xxx*e)
+        );
+    }
+
+    // Soft AO by sampling de
+    float softAO(vec3 p, vec3 n){
+        float ao = 0.0;
+        float sc = 0.008;
+        for (int i=1;i<=5;i++){
+            float d = deMandel(p + n * (float(i)*sc));
+            ao += float(i) * d;
+        }
+        ao = clamp(ao*0.6, 0.0, 1.0);
+        return ao;
+    }
+
+    // Raymarch
+    vec4 raymarch(vec3 ro, vec3 rd, float t){
+        float total = 0.0;
+        float glow = 0.0;
+        vec3 accum = vec3(0.0);
+
+        // Temporal jitter to reduce banding
+        float seed = hash(gl_FragCoord.xy + t);
+        total += seed * 0.02;
+
+        for (int i=0;i<120;i++){
+            vec3 pos = ro + rd * total;
+            // minor camera-centric swirl for demoscene motion
+            float ang = 0.15*sin(t*0.37) + 0.09*sin(t*0.21);
+            pos.xz = rot2(ang) * pos.xz;
+
+            float d = deMandel(pos);
+            float adv = clamp(d, 0.002, 0.25);
+            total += adv;
+
+            // accumulate neon-like glow near surface
+            float edge = exp(-12.0*abs(d));
+            float hue = 0.5 + 0.5*sin(0.6*pos.x + 0.7*pos.y + 0.5*pos.z + t*0.5);
+            vec3 c = palette(hue);
+            accum += c * edge * 0.04;
+            glow += edge * 0.03;
+
+            if (d < 0.0015 || total > 12.0) break;
+        }
+
+        vec3 col = accum;
+        if (total <= 12.0){
+            vec3 p = ro + rd * total;
+            vec3 n = getNormal(p);
+            vec3 L = normalize(vec3(0.7, 0.9, 0.4));
+            float diff = max(dot(n, L), 0.0);
+            float spec = pow(max(dot(reflect(-L, n), -rd), 0.0), 48.0);
+
+            float hue = 0.5 + 0.5*sin(0.9*p.x + 0.7*p.y + 0.6*p.z);
+            vec3 base = palette(hue);
+            float ao = softAO(p, n);
+
+            col = base*(0.18 + 1.1*diff)*ao + spec*vec3(1.0);
+            col += vec3(glow)*0.6;
+        }
+
+        // Background blend
+        vec3 bg = vec3(0.01, 0.015, 0.03);
+        col = mix(bg, col, clamp(glow*1.6, 0.0, 1.0));
+
+        // Vignette and scanlines
+        // reconstruct NDC p for vignette
+        // this matches main() computation
+        return vec4(col, 1.0);
+    }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = (gl_FragCoord.xy / R)*2.0 - 1.0;
+        uv.x *= R.x / R.y;
+
+        float t = u_time * 0.8;
+
+        // Camera
+        float r = 3.6;
+        float a = 0.45*t;
+        vec3 ro = vec3(r*cos(a), 1.2 + 0.3*sin(t*0.4), r*sin(a));
+        vec3 ta = vec3(0.0, 0.0, 0.0);
+
+        vec3 ww = normalize(ta - ro);
+        vec3 uu = normalize(cross(vec3(0.0,1.0,0.0), ww));
+        vec3 vv = cross(ww, uu);
+
+        float fov = 1.3;
+        vec3 rd = normalize(uu*uv.x + vv*uv.y + ww*fov);
+
+        vec4 col = raymarch(ro, rd, t);
+
+        // final post: vignette + scan + grain
+        float vig = 0.92 - 0.55*dot(uv, uv);
+        col.rgb *= clamp(vig, 0.25, 1.0);
+
+        float scan = 0.012 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        col.rgb += vec3(scan) * 0.010;
+
+        float g = hash(gl_FragCoord.xy + t) - 0.5;
+        col.rgb += g * 0.006;
+
+        gl_FragColor = vec4(max(col.rgb, 0.0), 1.0);
+    }
+`;
+neonFractalBloom.init = () => {
+    neonFractalBloom.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, neonFractalBloom.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, neonFractalBloom.fsSource)
+    );
+    gl.useProgram(neonFractalBloom.program);
+    neonFractalBloom.positionAttributeLocation = gl.getAttribLocation(neonFractalBloom.program, 'a_position');
+    neonFractalBloom.resolutionUniformLocation = gl.getUniformLocation(neonFractalBloom.program, 'u_resolution');
+    neonFractalBloom.timeUniformLocation = gl.getUniformLocation(neonFractalBloom.program, 'u_time');
+};
+neonFractalBloom.draw = (time) => {
+    gl.useProgram(neonFractalBloom.program);
+    gl.uniform2f(neonFractalBloom.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(neonFractalBloom.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(neonFractalBloom.positionAttributeLocation);
+    gl.vertexAttribPointer(neonFractalBloom.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+neonFractalBloom.name = 'Neon Fractal Bloom';
+effects.push(neonFractalBloom);
 
 // --- Effect 1: Starfield ---
 const starfield = {};
