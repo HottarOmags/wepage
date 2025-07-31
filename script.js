@@ -3722,77 +3722,7 @@ function updateEffectIndicator() {
     effectIndicator.textContent = `Effect: ${name} (${currentEffectIndex + 1}/${effects.length || 0})  |  FPS: ${fps.toFixed(0)}  |  ${res}`;
 }
 
-// --- iOS autoplay/RAF throttling helpers ---
-const isIOS = (() => {
-    const ua = navigator.userAgent || navigator.vendor || '';
-    const isiOSDevice = /iPad|iPhone|iPod/.test(ua);
-    const isIPadOS = (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    return isiOSDevice || isIPadOS;
-})();
-
-let hasStarted = false;
-
-function ensureFirstEffectInitialized() {
-    if (!effects.length) return;
-    const eff0 = effects[0];
-    if (eff0 && typeof eff0.init === 'function' && !eff0._inited) {
-        try { eff0.init(); eff0._inited = true; } catch(e){ console.warn('First effect init failed', e); }
-    }
-}
-
-function initAllEffectsOnce() {
-    for (const eff of effects) {
-        if (eff && typeof eff.init === 'function' && !eff._inited) {
-            try {
-                eff.init();
-                eff._inited = true;
-            } catch (e) {
-                console.warn('Effect init failed:', eff.name, e);
-            }
-        }
-    }
-}
-
-function startLoopOnce() {
-    if (hasStarted) return;
-    hasStarted = true;
-    startTime = performance.now();
-    lastFrameTime = startTime;
-    requestAnimationFrame(animateEffects);
-}
-
-function createStartOverlay() {
-    const overlay = document.createElement('button');
-    overlay.textContent = 'Tap to Start';
-    overlay.style.position = 'fixed';
-    overlay.style.inset = '0';
-    overlay.style.display = 'flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.justifyContent = 'center';
-    overlay.style.background = 'rgba(0,0,0,0.6)';
-    overlay.style.color = '#fff';
-    overlay.style.fontSize = '20px';
-    overlay.style.border = 'none';
-    overlay.style.cursor = 'pointer';
-    overlay.style.zIndex = '1001';
-    (overlay.style).webkitTapHighlightColor = 'transparent';
-
-    function begin() {
-        try { overlay.remove(); } catch(_){}
-        startLoopOnce();
-    }
-    overlay.addEventListener('click', begin, { passive: true });
-    overlay.addEventListener('touchstart', begin, { passive: true });
-
-    document.body.appendChild(overlay);
-}
-
-// Safety net: if any touch occurs, start loop
-document.addEventListener('touchstart', () => {
-    startLoopOnce();
-}, { passive: true, once: true });
-
-// Initial setup for the first effect (iOS-friendly)
+// Initial setup for the first effect
 if (!gl) {
     // If WebGL is not available, avoid attaching the loop and clicks
     effectIndicator.textContent = 'WebGL not supported';
@@ -3802,21 +3732,16 @@ if (!gl) {
     // Start from beginning of the ordered list
     currentEffectIndex = 0;
 
-    if (!effects.length) {
+    if (effects.length) {
+        // Ensure we start with a valid effect
+        const eff0 = effects[currentEffectIndex];
+        if (eff0 && typeof eff0.init === 'function') {
+            eff0.init();
+        }
+    } else {
         console.warn('No effects were registered.');
-    } else {
-        // Pre-initialize all effects to avoid first-frame compile on RAF
-        initAllEffectsOnce();
-        ensureFirstEffectInitialized();
     }
-
     updateEffectIndicator();
-
-    // iOS Safari typically throttles RAF until a gesture; use an overlay
-    if (isIOS) {
-        createStartOverlay();
-    } else {
-        startLoopOnce();
-    }
+    animateEffects(performance.now());
 }
 
