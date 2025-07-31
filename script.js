@@ -201,12 +201,13 @@ gl.bufferData(gl.ARRAY_BUFFER, quadPositions, gl.STATIC_DRAW);
 let currentEffectIndex = 0;
 const effects = [];
 let startTime = performance.now();
-const effectDuration = 6500; // in milliseconds
+const effectDuration = 7500; // in milliseconds
 
 // Centralized effect ordering by name. Reorder this array to change play order.
 const EFFECT_ORDER = [
     'Sine Wave',
     'Starfield',
+    'Hyperspace Glyphs',
     'Plasma',
     'Boing Ball',
     'Water',
@@ -214,12 +215,13 @@ const EFFECT_ORDER = [
     'Shadebobs',
     'Flame 2025',
     'Color Cycle',
+    'Neon Smoke Portal',
     'Metaballs',
     'RotoZoomer',
     'Wave Distortion',
     'Kaleidoscope Tunnel',
     'Voronoi Flow',
-    'Neon Smoke Portal'
+    'Particle Vector Field',
 ];
 
 // Centralized effect ordering by name. Reorder this array to change play order.
@@ -1520,6 +1522,167 @@ voronoiFlow.draw = (time) => {
 };
 voronoiFlow.name = 'Voronoi Flow';
 effects.push(voronoiFlow);
+
+// --- Effect: Particle Vector Field (brand-new GPU particle flow) ---
+const particleVectorField = {};
+particleVectorField.vsSource = `
+    precision mediump float; // keep precision explicit and consistent
+    attribute float a_id;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Hash helpers
+    float hash(float n){ return fract(sin(n)*43758.5453123); }
+    vec2  hash2(float n){ return fract(sin(vec2(n, n+1.23))*vec2(43758.5453, 22578.145912)); }
+
+    // 2D rotation
+    mat2 rot(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    // Pseudo curl-like flow built from simple sin/cos warps (fast, branchless)
+    vec2 flow(vec2 p, float t){
+        float s1 = sin(p.y*2.3 + t*0.9);
+        float c1 = cos(p.x*2.7 - t*1.1);
+        float s2 = sin(p.x*3.7 - p.y*1.9 + t*0.6);
+        float c2 = cos(p.y*3.1 + p.x*2.2 - t*0.5);
+        vec2 v = vec2(s1 + 0.6*s2, -c1 + 0.6*c2);
+        // swirl
+        float a = 0.35*sin(t*0.27) + 0.2*sin(t*0.13);
+        v = rot(a)*v;
+        return v;
+    }
+
+    void main(){
+        // Each particle gets a deterministic seed from its id
+        float id = a_id;
+        vec2 seed = hash2(id*13.37 + 7.1);
+
+        // Make the field time-coherent: remove lifecycle reset and use a slow global time
+        float T = u_time * 0.25; // slow everything down
+        float tLocal = T;
+
+        // Spawn base in [-1,1] around screen center with stratified jitter
+        vec2 spawn = (seed*2.0 - 1.0);
+        spawn.x *= u_resolution.x / u_resolution.y; // aspect
+        spawn *= 0.95;
+
+        // Integrate simple flow (semi-analytic trail param)
+        vec2 p = spawn;
+        float dt = 0.03;              // smaller step for smoother, slower advection
+        float t = tLocal + hash(id+91.0)*3.0; // small per-particle dephase, constant over time
+        for (int i=0; i<28; i++){
+            vec2 v = flow(p*1.2 + seed*2.0, t*0.45); // reduce flow temporal speed
+            p += v * dt * (0.35 + 0.45*hash(id + float(i)*17.0)); // overall slower motion
+            t += dt;
+        }
+
+        // Subtle drift so field breathes (slower + smaller)
+        p += 0.04*vec2(sin(T*0.12 + seed.x*6.0), cos(T*0.10 + seed.y*7.0));
+
+        // Fade near edges to avoid harsh clipping
+        float ar = u_resolution.x / u_resolution.y;
+        vec2 q = p; q.x /= ar;
+        float edge = smoothstep(1.2, 0.85, max(abs(q.x), abs(q.y)));
+
+        // Convert NDC to clipspace
+        vec2 clip = p;
+        clip.x /= ar;
+
+        gl_Position = vec4(clip, 0.0, 1.0);
+
+        // Size varies with edge fade with much gentler flicker
+        float size = 1.4 + 1.2*edge + 0.3*sin(id*12.73 + T*2.0);
+        gl_PointSize = max(1.0, size);
+    }
+`;
+
+particleVectorField.fsSource = `
+    precision mediump float;
+    uniform float u_time;
+    // Soft round points
+    void main(){
+        vec2 uv = gl_PointCoord*2.0 - 1.0;
+        float r2 = dot(uv, uv);
+        float alpha = smoothstep(1.0, 0.0, r2);
+
+        // Dim overall intensity and reduce pulse amplitude
+        vec3 baseA = vec3(0.035, 0.63, 0.66); // dimmed cyan
+        vec3 baseB = vec3(0.57, 0.12, 0.57);  // dimmed magenta
+        vec3 col = mix(baseA, baseB, smoothstep(0.0, 1.0, alpha));
+
+        // Softer, slower pulse
+        col *= 0.94 + 0.06 * sin(u_time * 1.6);
+
+        // Lower maximum alpha for less additive bloom
+        float a = alpha * 0.55;
+
+        gl_FragColor = vec4(col, a);
+    }
+`;
+
+particleVectorField.init = () => {
+    // Create program
+    particleVectorField.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, particleVectorField.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, particleVectorField.fsSource)
+    );
+    gl.useProgram(particleVectorField.program);
+
+    // Attributes/uniforms
+    particleVectorField.aId = gl.getAttribLocation(particleVectorField.program, 'a_id');
+    particleVectorField.uRes = gl.getUniformLocation(particleVectorField.program, 'u_resolution');
+    particleVectorField.uTime = gl.getUniformLocation(particleVectorField.program, 'u_time');
+
+    // Allocate particle ids once
+    const COUNT = 180000; // high count, but simple shader keeps it smooth
+    particleVectorField.count = COUNT;
+    const ids = new Float32Array(COUNT);
+    for (let i=0;i<COUNT;i++) ids[i] = i;
+
+    particleVectorField.idBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, particleVectorField.idBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, ids, gl.STATIC_DRAW);
+
+    // Blending for additive neon trails
+    particleVectorField.prevState = {
+        blend: gl.isEnabled(gl.BLEND),
+        depthTest: gl.isEnabled(gl.DEPTH_TEST)
+    };
+};
+
+particleVectorField.draw = (time) => {
+    gl.useProgram(particleVectorField.program);
+    gl.uniform2f(particleVectorField.uRes, canvas.width, canvas.height);
+    gl.uniform1f(particleVectorField.uTime, time / 1000.0);
+
+    // Render state for additive particles (use softer additive to reduce brightness)
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    // Keep additive feel but dampen overlaps by scaling src alpha down in shader.
+    // Optionally, change to premultiplied style for even softer result:
+    // gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, particleVectorField.idBuffer);
+    gl.enableVertexAttribArray(particleVectorField.aId);
+    gl.vertexAttribPointer(particleVectorField.aId, 1, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.POINTS, 0, particleVectorField.count);
+
+    // restore default for safety (other effects set their own, but keep tidy)
+    gl.disableVertexAttribArray(particleVectorField.aId);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST);
+};
+particleVectorField.name = 'Particle Vector Field';
+effects.push(particleVectorField);
+
+// Ensure it appears in the centralized order
+(function ensurePVFOrder(){
+    const name = 'Particle Vector Field';
+    if (!EFFECT_ORDER.includes(name)) EFFECT_ORDER.push(name);
+    applyEffectOrder();
+})();
+
 // --- Effect: Hex Lattice Warp (brand-new) ---
 const hexLatticeWarp = {};
 hexLatticeWarp.vsSource = quadVS;
