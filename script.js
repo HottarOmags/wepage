@@ -217,17 +217,16 @@ const effectDuration = 5000; // 5 seconds per effect
 // Centralized effect ordering by name. Reorder this array to change play order.
 const EFFECT_ORDER = [
     'Starfield',
-    'Shadebobs',
     'Plasma',
     'Sine Wave',
     'Color Cycle',
     'Boing Ball',
+    'Shadebobs',
     'Metaballs',
     'RotoZoomer',
     'Wave Distortion',
     'Fire',
     'Kaleidoscope Tunnel',
-    // 'RGB Split Glitch', // removed from rotation
     'Voronoi Flow',
     'Tunnel'
 ];
