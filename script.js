@@ -16,7 +16,6 @@ let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
 
 const EFFECT_ORDER = [
-    'Neon Fractal Bloom',
     'Sine Wave',
     'Starfield',
     'Hyperspace Glyphs',
@@ -25,6 +24,7 @@ const EFFECT_ORDER = [
     'Water',
     'Tunnel',
     'Shadebobs',
+    'Neon Fractal Bloom',
     'Flame 2025',
     'Color Cycle',
     'Neon Smoke Portal',
