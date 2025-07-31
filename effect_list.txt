@@ -7,3 +7,4 @@ Effect List:
 5: Metaballs
 6: RotoZoomer
 7: Wave Distortion
+8: Fire Flames (Amiga Demoscene Style)
