@@ -702,97 +702,6 @@ effects.push(tunnel);
 const shadebobs = {};
 shadebobs.vsSource = quadVS;
 shadebobs.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
-
-    // pseudo-random
-    float hash(float n){ return fract(sin(n)*43758.5453123); }
-    vec2 hash2(float n){ return fract(sin(vec2(n,n+1.23))*vec2(43758.5453,22578.145912)); }
-
-    // gaussian-ish falloff
-    float blob(vec2 p, vec2 c, float r){
-        float d = length(p - c);
-        float g = exp(- (d*d) / (2.0*r*r));
-        return g;
-    }
-
-    // neon palette
-    vec3 palette(float t){
-        vec3 a = vec3(0.55,0.45,0.65);
-        vec3 b = vec3(0.45,0.55,0.45);
-        vec3 c = vec3(1.00,1.00,1.00);
-        vec3 d = vec3(0.10,0.33,0.67);
-        return a + b * cos(6.28318 * (c*(t + d)));
-    }
-
-    void main(){
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-        vec2 p = uv * 2.0 - 1.0;
-        p.x *= u_resolution.x / u_resolution.y;
-
-        float t = u_time * 0.55;
-
-        // slight domain warp for extra motion
-        vec2 warp = vec2(
-            0.02 * sin(p.y*6.0 + t*2.0),
-            0.02 * cos(p.x*6.0 - t*2.2)
-        );
-        p += warp;
-
-        // parameters
-        const int N = 16;
-        float radius = 0.23;
-        float accum = 0.0;
-        vec3 col = vec3(0.0);
-
-        // additive shadebobs
-        for(int i=0;i<N;i++){
-            float fi = float(i);
-            // Lissajous-ish paths
-            float sp1 = 0.6 + 0.3*hash(fi*7.31);
-            float sp2 = 0.7 + 0.35*hash(fi*3.77);
-            float ph1 = 6.2831853*hash(fi*5.19);
-            float ph2 = 6.2831853*hash(fi*9.17);
-            float ax  = 0.55 + 0.25*hash(fi*2.01);
-            float ay  = 0.40 + 0.35*hash(fi*4.13);
-
-            vec2 c = vec2(
-                ax * sin(t*sp1 + ph1),
-                ay * sin(t*sp2 + ph2)
-            );
-
-            float r = radius * (0.65 + 0.5*hash(fi*1.11));
-            float b = blob(p, c, r);
-            accum += b;
-
-            float hue = fract(0.15*fi + 0.35*sin(t*0.7 + fi*0.37));
-            vec3 bc = palette(hue);
-            col += bc * b;
-        }
-
-        // normalize/soft threshold for bloom-y look
-        float soft = smoothstep(0.12, 0.6, accum);
-        col = col / max(1.0, float(N)*0.6);
-        col += col * pow(soft, 3.0) * 0.9;
-
-        // subtle chromatic aberration
-        vec2 ca = (p)*0.004;
-        float r = col.r + 0.10 * texture2DProj(sampler2D(0), vec4(uv+ca,0.0,1.0)).r; // stub: no real sampler, emulate
-        float g = col.g;
-        float b = col.b + 0.10 * texture2DProj(sampler2D(0), vec4(uv-ca,0.0,1.0)).b;
-        col = vec3(r,g,b);
-
-        // vignette
-        float vig = 0.92 - 0.55*dot(p,p);
-        col *= clamp(vig, 0.25, 1.0);
-
-        // scanlines
-        float scan = 0.04 * sin(gl_FragCoord.y*3.14159 + t*3.0);
-        col += vec3(scan)*0.03;
-
-        gl_FragColor = vec4(col, 1.0);
-    }
 `;
 
 // Note: WebGL1 has no default sampler2D bound; above CA "sampler2D" usage is a stub to fake the effect:
@@ -1619,73 +1528,34 @@ hexLatticeWarp.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
-    // Hex coordinate helper: converts to axial hex coords
-    // Reference technique: project onto skewed basis for hex tiling
-    vec3 hex(vec2 p){
-        // Skew basis
-        const vec2 a = vec2(1.0, 0.0);
-        const vec2 b = vec2(0.5, 0.86602540378); // sin/cos 60deg
-        float q = (2.0/3.0) * p.x;
-        float r = (-1.0/3.0) * p.x + (0.57735026919) * p.y; // 1/sqrt(3)
-        // fractional axial
-        float rq = floor(q + 0.5);
-        float rr = floor(r + 0.5);
-        float rs = floor(-q - r + 0.5);
-        float dq = q - rq;
-        float dr = r - rr;
-        // cartesian local coords inside cell center
-        // convert back using basis
-        vec2 center = (rq)*a + (rr)*b;
-        vec2 local = p - center;
-        return vec3(local, 0.0);
-    }
-
-    // Compute hex cell center distance and edge distance approximately
-    // Using nearest of 7 sample points (center + 6 neighbors)
+    // Compute hex cell edge intensity via nearest-center approximation
     float hexEdge(vec2 p, float scale){
-        // Scale UV into hex space
         vec2 hp = p / scale;
-        // axial neighbors
-        vec2 n[7];
-        n[0]=vec2(0.0,0.0);
-        n[1]=vec2(1.0,0.0);
-        n[2]=vec2(0.5,0.8660254);
-        n[3]=vec2(-0.5,0.8660254);
-        n[4]=vec2(-1.0,0.0);
-        n[5]=vec2(-0.5,-0.8660254);
-        n[6]=vec2(0.5,-0.8660254);
 
-        // Find local position to nearest center
-        // Rough nearest search by rounding axial coords
+        // axial rounding to nearest hex center in axial-coord space
         float q = (2.0/3.0) * hp.x;
-        float r = (-1.0/3.0) * hp.x + (0.57735026919) * hp.y;
+        float r = (-1.0/3.0) * hp.x + (0.57735026919) * hp.y; // 1/sqrt(3)
         float rq = floor(q + 0.5);
         float rr = floor(r + 0.5);
-        vec2 base = vec2(rq + rr*0.5, rr*0.8660254);
 
-        float dmin = 1e9;
-        vec2 best = vec2(0.0);
-        for(int i=0;i<7;i++){
-            vec2 c = base + n[i];
-            vec2 d = hp - c;
-            float dd = dot(d,d);
-            if(dd < dmin){ dmin = dd; best = d; }
-        }
+        // convert axial back to cartesian center
+        vec2 base = vec2(rq + rr*0.5, rr*0.86602540378);
 
-        // Distance to hex edges in local coordinates of best cell:
-        // Use distance to edges of regular hex (apothem = 0.8660254)
-        // Project onto three axes
-        vec2 l = best;
+        // vector from center to point
+        vec2 l = hp - base;
+
+        // distance to the three orientations of hex edges (using apothem axes)
         float a = abs(l.x);
-        float b = abs(0.5*l.x + 0.8660254*l.y);
-        float c = abs(-0.5*l.x + 0.8660254*l.y);
-        float edge = max(a, max(b, c)); // distance in edge metric
-        // Normalize: edge ~ 0 at center, ~0.866 at edge; map to [0..1]
+        float b = abs(0.5*l.x + 0.86602540378*l.y);
+        float c = abs(-0.5*l.x + 0.86602540378*l.y);
+
+        float edge = max(a, max(b, c));
+        // map approx center->edge to 0..1 and smooth
         float ed = smoothstep(0.70, 0.86, edge);
         return ed;
     }
 
-    // Flow noise helpers
+    // Hash/noise helpers
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
     float noise(vec2 p){
         vec2 i = floor(p);
@@ -1709,13 +1579,11 @@ hexLatticeWarp.fsSource = `
         return v;
     }
 
-    // Cool neon palette distinct from others: teal -> purple -> amber cycling
+    // Palette: teal -> purple -> amber
     vec3 palette(float t){
         vec3 c1 = vec3(0.05, 0.9, 0.9);
         vec3 c2 = vec3(0.65, 0.2, 0.95);
         vec3 c3 = vec3(1.0, 0.7, 0.15);
-        float s = smoothstep(0.0, 0.5, t) * (1.0 - smoothstep(0.5, 1.0, t))*2.0;
-        // two-stage blend
         vec3 a = mix(c1, c2, smoothstep(0.0, 0.5, t));
         vec3 b = mix(c2, c3, smoothstep(0.5, 1.0, t));
         return mix(a, b, step(0.5, t));
@@ -1728,13 +1596,11 @@ hexLatticeWarp.fsSource = `
 
         float t = u_time;
 
-        // Parallax multi-scale hex lattice
-        // Three layers with different scales and speeds
+        // three parallaxed layers with domain warp
         float s1 = 0.75;
         float s2 = 0.45;
         float s3 = 0.25;
 
-        // Domain warps for each layer to make it fluid and "surprising"
         vec2 w1 = 0.18 * vec2(
             fbm(p*1.1 + vec2(t*0.21, -t*0.17)),
             fbm(p*1.0 + vec2(-t*0.19, t*0.23))
@@ -1748,7 +1614,6 @@ hexLatticeWarp.fsSource = `
             fbm(p*3.2 + vec2(-t*0.031, -t*0.044))
         );
 
-        // Subtle swirl/spiral drift
         float ang = 0.12 * t;
         mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
         vec2 q1 = R * (p + w1 * 0.6);
@@ -1759,24 +1624,19 @@ hexLatticeWarp.fsSource = `
         float e2 = hexEdge(q2, s2);
         float e3 = hexEdge(q3, s3);
 
-        // Edge brightness and core glow
         float edgeNeon = pow(smoothstep(0.75, 1.0, e1)*0.8 + smoothstep(0.72, 1.0, e2)*0.7 + smoothstep(0.70, 1.0, e3)*0.6, 1.4);
 
-        // Cell center pulses using fbm in each layer
         float cellPulse = 0.0;
         cellPulse += 0.55 * (0.5 + 0.5*sin(8.0*fbm(q1*1.2 + t*0.3) + t*1.1));
         cellPulse += 0.35 * (0.5 + 0.5*sin(10.0*fbm(q2*1.7 - t*0.2) + t*0.9));
         cellPulse += 0.25 * (0.5 + 0.5*sin(12.0*fbm(q3*2.0 + t*0.1) + t*0.7));
 
-        // Depth-vignette and scanline accent
         float vig = 0.92 - 0.55 * dot(p,p);
         float scan = 0.025 * sin(gl_FragCoord.y * 3.14159 + t * 3.2);
 
-        // Time-driven hue with spatial variation
         float hue = fract(0.5 + 0.3*sin(t*0.37) + 0.2*sin(p.x*1.8 + p.y*1.3 + t*0.6));
         vec3 base = palette(hue);
 
-        // Compose colors: neon edges tinted towards cyan/magenta, cores toward amber
         vec3 edgeCol = mix(vec3(0.0, 0.9, 1.0), vec3(0.9, 0.2, 1.0), 0.5 + 0.5*sin(t*0.5));
         vec3 coreCol = mix(vec3(1.0, 0.7, 0.15), base, 0.4);
 
@@ -2351,6 +2211,232 @@ neonSmokePortal.draw = (time) => {
 neonSmokePortal.name = 'Neon Smoke Portal';
 effects.push(neonSmokePortal);
 
+// --- Effect: Hyperspace Glyphs (brand-new, neon runes in layered parallax) ---
+const hyperspaceGlyphs = {};
+hyperspaceGlyphs.vsSource = quadVS;
+hyperspaceGlyphs.fsSource = `
+    precision mediump float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    float hash(float n){ return fract(sin(n)*43758.5453123); }
+    float hash2(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    mat2 rot(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    float sdBox(vec2 p, vec2 b){
+        vec2 d = abs(p) - b;
+        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+    }
+    float sdCircle(vec2 p, float r){ return length(p) - r; }
+    float sdTriangleEq(vec2 p){
+        const float k = 0.57735026919;
+        p.x = abs(p.x);
+        return max(p.y, k*p.x - 0.5);
+    }
+    float sdRing(vec2 p, float r, float t){
+        return abs(length(p)-r) - t;
+    }
+
+    float smin(float a, float b, float k){
+        float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+        return mix(b, a, h) - k*h*(1.0-h);
+    }
+
+    float runeSDF(vec2 p, float idx){
+        float d = 1e9;
+        float t = idx;
+
+        float frame = sdBox(p, vec2(0.90, 0.90)) - 0.10;
+        d = min(d, frame);
+
+        float variant = fract(t*0.73);
+        if (variant < 0.33){
+            float c = sdRing(p, 0.45, 0.06);
+            float v = sdBox(p, vec2(0.06, 0.65));
+            float h = sdBox(p.yx, vec2(0.06, 0.65));
+            d = smin(d, c, 0.12);
+            d = smin(d, v, 0.12);
+            d = smin(d, h, 0.12);
+        } else if (variant < 0.66){
+            vec2 q = rot(0.523599)*p;
+            float tri = sdTriangleEq(q*1.1);
+            float orb = sdCircle(p, 0.28);
+            d = smin(d, tri, 0.10);
+            d = smin(d, abs(orb)-0.06, 0.10);
+        } else {
+            float r1 = sdRing(p, 0.42, 0.05);
+            float r2 = sdRing(p, 0.24, 0.05);
+            vec2 q = rot(0.35)*p;
+            float bar1 = sdBox(q, vec2(0.65, 0.06));
+            q = rot(-0.7)*q;
+            float bar2 = sdBox(q, vec2(0.55, 0.06));
+            d = smin(d, r1, 0.10);
+            d = smin(d, r2, 0.10);
+            d = smin(d, bar1, 0.08);
+            d = smin(d, bar2, 0.08);
+        }
+
+        vec2 rp = abs(p) - vec2(0.82, 0.82);
+        float tick = sdBox(rp, vec2(0.14, 0.02));
+        vec2 rp2 = vec2(p.x, -p.y); rp2 = abs(rp2) - vec2(0.82, 0.82);
+        float tick2 = sdBox(rp2, vec2(0.14, 0.02));
+        vec2 rp3 = vec2(-p.x, p.y); rp3 = abs(rp3) - vec2(0.82, 0.82);
+        float tick3 = sdBox(rp3, vec2(0.14, 0.02));
+        vec2 rp4 = -p; rp4 = abs(rp4) - vec2(0.82, 0.82);
+        float tick4 = sdBox(rp4, vec2(0.14, 0.02));
+        d = smin(d, min(min(tick, tick2), min(tick3, tick4)), 0.08);
+
+        return d;
+    }
+
+    vec3 palette(float h){
+        vec3 c1 = vec3(0.05, 0.90, 0.95);
+        vec3 c2 = vec3(0.95, 0.20, 0.95);
+        vec3 c3 = vec3(1.00, 0.75, 0.20);
+        return mix(mix(c1, c2, smoothstep(0.0, 0.6, h)), c3, smoothstep(0.6, 1.0, h));
+    }
+
+    vec3 renderGlyph(vec2 uv, float seed, float t, out float alpha){
+        float baseIdx = floor(seed*997.0);
+        float ang = 0.6*sin(seed*12.3 + t*0.7) + 0.4*sin(seed*7.1 - t*0.53);
+        vec2 p = rot(ang) * uv;
+
+        float dec = 0.85 + 0.15*sin(t*3.0 + seed*23.7);
+        p *= dec;
+
+        float d = runeSDF(p, baseIdx);
+
+        float line = 1.0 - smoothstep(0.020, 0.030, abs(d));
+        float glow = 1.0 - smoothstep(0.14, 0.46, abs(d));
+
+        float hue = fract(0.47 + 0.33*sin(seed*19.0) + 0.25*sin(t*0.35 + seed*5.0));
+        vec3 col = palette(hue);
+
+        float flick = 0.6 + 0.4*sin(t*6.0 + seed*11.1);
+        col *= 0.9 + 0.1*flick;
+
+        vec3 c = vec3(0.0);
+        c += col * line * 1.15;
+        c += col * glow * 0.50;
+
+        alpha = clamp(line + glow*0.6, 0.0, 1.0);
+        return c;
+    }
+
+    void tileSpace(in vec2 p, float scale, out vec2 local, out vec2 id){
+        vec2 gp = p*scale;
+        vec2 g = floor(gp);
+        vec2 f = fract(gp);
+        local = (f*2.0 - 1.0);
+        id = g;
+    }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = (gl_FragCoord.xy / R)*2.0 - 1.0;
+        uv.x *= R.x / R.y;
+
+        float t = u_time;
+
+        vec3 accum = vec3(0.0);
+
+        vec2 cam = 0.25*vec2(sin(t*0.2), cos(t*0.17));
+
+        for (int i=0;i<4;i++){
+            float fi = float(i);
+            float depth = mix(1.8, 0.65, fi/3.0);
+            float scale = mix(3.5, 9.5, fi/3.0);
+            float speed = mix(0.08, 0.35, fi/3.0);
+
+            vec2 p = uv;
+            p += cam * (0.15 + 0.25*fi);
+            p += vec2(0.35*sin(t*speed*0.9 + fi*1.7), 0.35*cos(t*speed*1.1 - fi*1.37));
+            p = rot(0.07*sin(t*0.25 + fi))*p;
+
+            vec2 local, id;
+            tileSpace(p, scale, local, id);
+
+            float vig = 1.0 - 0.35*dot(uv, uv);
+
+            vec3 layerColor = vec3(0.0);
+            float layerAlpha = 0.0;
+
+            for (int oy=-1; oy<=0; oy++){
+                for (int ox=-1; ox<=0; ox++){
+                    vec2 off = vec2(float(ox), float(oy));
+                    vec2 lid = id + off;
+                    float s = hash2(lid);
+                    vec2 jitter = vec2(sin(s*57.0), cos(s*91.0))*0.18;
+                    vec2 l = local - off*2.0 + jitter;
+                    l.x *= 0.9;
+
+                    float a;
+                    vec3 c = renderGlyph(l/depth, s, t, a);
+
+                    float w = exp(-0.9*dot(l, l));
+                    layerColor += c * a * w;
+                    layerAlpha += a * w;
+                }
+            }
+
+            layerColor /= max(0.0001, layerAlpha);
+            layerAlpha = clamp(layerAlpha, 0.0, 1.0);
+
+            float hueL = fract(0.2*fi + 0.15*sin(t*0.23 + fi));
+            vec3 tint = palette(hueL);
+            layerColor = mix(layerColor, layerColor * tint, 0.30);
+            layerColor *= vig;
+
+            float shutter = 0.7 + 0.3*sin(t*2.0 + fi*1.3);
+            layerAlpha *= shutter;
+
+            accum = mix(accum, layerColor, clamp(layerAlpha*0.65, 0.0, 1.0));
+        }
+
+        float scan = 0.016 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + t*41.2)*43758.5453) - 0.5;
+        accum += vec3(scan) * 0.012 + vec3(grain) * 0.008;
+
+        float centerGlow = exp(-2.0*dot(uv,uv));
+        accum += vec3(0.08, 0.20, 0.30) * centerGlow * 0.45;
+
+        gl_FragColor = vec4(max(accum, 0.0), 1.0);
+    }
+`;
+
+hyperspaceGlyphs.init = () => {
+    hyperspaceGlyphs.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, hyperspaceGlyphs.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, hyperspaceGlyphs.fsSource)
+    );
+    gl.useProgram(hyperspaceGlyphs.program);
+    hyperspaceGlyphs.positionAttributeLocation = gl.getAttribLocation(hyperspaceGlyphs.program, 'a_position');
+    hyperspaceGlyphs.resolutionUniformLocation = gl.getUniformLocation(hyperspaceGlyphs.program, 'u_resolution');
+    hyperspaceGlyphs.timeUniformLocation = gl.getUniformLocation(hyperspaceGlyphs.program, 'u_time');
+};
+
+hyperspaceGlyphs.draw = (time) => {
+    gl.useProgram(hyperspaceGlyphs.program);
+    gl.uniform2f(hyperspaceGlyphs.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(hyperspaceGlyphs.timeUniformLocation, time / 1000.0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(hyperspaceGlyphs.positionAttributeLocation);
+    gl.vertexAttribPointer(hyperspaceGlyphs.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+hyperspaceGlyphs.name = 'Hyperspace Glyphs';
+effects.push(hyperspaceGlyphs);
+
+// Ensure new effect is present in play order
+(function ensureNewEffectOrder(){
+    const toEnsure = ['Hyperspace Glyphs'];
+    for (const name of toEnsure) {
+        if (!EFFECT_ORDER.includes(name)) EFFECT_ORDER.push(name);
+    }
+    applyEffectOrder();
+})();
 // --- Main Animation Loop ---
 function animateEffects(currentTime) {
     requestAnimationFrame(animateEffects);
