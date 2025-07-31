@@ -16,15 +16,17 @@ let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
 
 const EFFECT_ORDER = [
-    'Chromatic Voronoi Bloom',
+    
+    
     'Sine Wave',
     'Starfield',
-    'Hyperspace Glyphs',
     'Plasma',
+    'Particle Vector Field',
     'Boing Ball',
     'Water',
     'Tunnel',
     'Shadebobs',
+    'Aurora Moiré Bloom',
     'Neon Fractal Bloom',
     'Flame 2025',
     'Color Cycle',
@@ -32,12 +34,13 @@ const EFFECT_ORDER = [
     'Metaballs',
     'RotoZoomer',
     'Wave Distortion',
+    'Hyperspace Glyphs',
     'Kaleidoscope Tunnel',
     'Ember Flock',
     'Neon Parallax City',
     'Voronoi Flow',
-    'Particle Vector Field',
-    'Hex Lattice Warp'
+    'Hex Lattice Warp',
+    'Chromatic Voronoi Bloom'
 ];
 
 // --- Minimal Matrix Helpers (mat4/mat3) for Boing Ball ---
@@ -245,6 +248,165 @@ function nextEffect() {
     updateEffectIndicator(); // Update the indicator
     console.log('Switched to effect:', currentEffectIndex, eff && eff.name);
 }
+
+// --- Effect: Aurora Moiré Bloom (new demoscene moiré + aurora veil) ---
+const auroraMoireBloom = {};
+auroraMoireBloom.vsSource = quadVS;
+auroraMoireBloom.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Hash/Noise/FBM
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i+vec2(1.0,0.0));
+        float c = hash(i+vec2(0.0,1.0));
+        float d = hash(i+vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v=0.0, a=0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<4;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+    mat2 rot(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    // Cold Aurora Palette: arctic cyan -> emerald -> ice-blue -> amethyst
+    vec3 palette(float t){
+        t = clamp(t, 0.0, 1.0);
+        vec3 c1 = vec3(0.05, 0.92, 0.98); // arctic cyan
+        vec3 c2 = vec3(0.10, 0.85, 0.40); // emerald
+        vec3 c3 = vec3(0.50, 0.85, 1.00); // ice-blue
+        vec3 c4 = vec3(0.70, 0.35, 0.95); // amethyst
+        if (t < 0.33){
+            float k = smoothstep(0.0, 0.33, t);
+            return mix(c1, c2, k);
+        } else if (t < 0.66){
+            float k = smoothstep(0.33, 0.66, t);
+            return mix(c2, c3, k);
+        } else {
+            float k = smoothstep(0.66, 1.0, t);
+            return mix(c3, c4, k);
+        }
+    }
+
+    // Moiré field from two rotated periodic lattices
+    float moire(vec2 p, float t){
+        // scaled, rotated grids
+        float s1 = 3.2, s2 = 3.2;
+        float a1 = 0.35 + 0.20*sin(t*0.3);
+        float a2 = -0.22 + 0.17*cos(t*0.27);
+        vec2 g1 = rot(a1) * (p * s1);
+        vec2 g2 = rot(a2) * (p * s2);
+
+        // periodic waves
+        float w1 = sin(g1.x) * sin(g1.y);
+        float w2 = sin(g2.x) * sin(g2.y);
+
+        // interference
+        float m = 0.5 + 0.5 * cos(6.28318 * (w1 - w2));
+        // enhance edges for neon lines
+        float edges = smoothstep(0.65, 0.98, m) - smoothstep(0.98, 1.0, m);
+        return clamp(m + edges*0.25, 0.0, 1.0);
+    }
+
+    // Aurora veil: vertically-biased drifting curtains
+    vec3 aurora(vec2 p, float t){
+        vec2 q = p;
+        q.y += 0.35;
+        q.x += 0.15*sin(t*0.35) + 0.10*sin(p.y*1.7 - t*0.5);
+        float veil =
+            0.55*fbm(q*1.2 + vec2( 0.22*t, -0.17*t)) +
+            0.35*fbm(q*2.1 + vec2(-0.19*t,  0.13*t)) +
+            0.18*fbm(q*3.5 + vec2( 0.07*t,  0.09*t));
+        // vertical falloff, brighter up high like real aurora
+        float vfall = smoothstep(-0.6, 0.8, p.y);
+        float intensity = clamp(veil * vfall, 0.0, 1.0);
+        return palette(intensity) * (0.35 + 0.85*intensity);
+    }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = (gl_FragCoord.xy / R) * 2.0 - 1.0;
+        uv.x *= R.x / R.y;
+
+        float t = u_time;
+
+        // Background: deep cold space with faint nebula
+        vec2 nuv = uv;
+        float fog = fbm(nuv*1.2 + vec2(0.1*t, -0.07*t));
+        vec3 bg = mix(vec3(0.005, 0.01, 0.02), vec3(0.02, 0.05, 0.08), fog*0.6);
+
+        // Domain warp for motion
+        vec2 w = 0.18 * vec2(
+            fbm(uv*1.3 + vec2( 0.17*t, -0.15*t)),
+            fbm(uv*1.3 + vec2(-0.13*t,  0.19*t))
+        );
+        vec2 p = uv + w;
+
+        // Moiré pattern and neon edges
+        float m = moire(p*1.1, t);
+        float edge = smoothstep(0.85, 0.98, m);
+        float thin = smoothstep(0.60, 0.85, m) * (1.0 - edge);
+        float band = m;
+
+        // Aurora veil layer
+        vec3 veil = aurora(p, t);
+
+        // Colorization: band drives hue; edges add neon accents
+        float hue = band;
+        vec3 base = palette(hue);
+        vec3 col = mix(bg, base, 0.65*band);
+        col += veil * 0.55;
+        // cyan/magenta accents on edges to elevate demoscene vibe
+        vec3 accentA = vec3(0.10, 0.95, 1.00);
+        vec3 accentB = vec3(0.85, 0.25, 1.00);
+        col += mix(accentA, accentB, hue) * edge * 0.65;
+        col += base * thin * 0.25;
+
+        // Vignette
+        float vig = 0.94 - 0.52*dot(uv, uv);
+        col *= clamp(vig, 0.32, 1.0);
+
+        // Subtle scanlines and grain
+        float scan = 0.010 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + t*31.7)*43758.5453) - 0.5;
+        col += vec3(scan) * 0.008 + vec3(grain) * 0.006;
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+auroraMoireBloom.init = () => {
+    auroraMoireBloom.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, auroraMoireBloom.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, auroraMoireBloom.fsSource)
+    );
+    gl.useProgram(auroraMoireBloom.program);
+    auroraMoireBloom.positionAttributeLocation = gl.getAttribLocation(auroraMoireBloom.program, 'a_position');
+    auroraMoireBloom.resolutionUniformLocation = gl.getUniformLocation(auroraMoireBloom.program, 'u_resolution');
+    auroraMoireBloom.timeUniformLocation = gl.getUniformLocation(auroraMoireBloom.program, 'u_time');
+};
+auroraMoireBloom.draw = (time) => {
+    gl.useProgram(auroraMoireBloom.program);
+    gl.uniform2f(auroraMoireBloom.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(auroraMoireBloom.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(auroraMoireBloom.positionAttributeLocation);
+    gl.vertexAttribPointer(auroraMoireBloom.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+auroraMoireBloom.name = 'Aurora Moiré Bloom';
+effects.push(auroraMoireBloom);
 
 // --- Effect 0: Neon Fractal Bloom (new demoscene raymarch) ---
 const neonFractalBloom = {};
