@@ -67,6 +67,8 @@ function nextEffect() {
     currentEffectIndex = (currentEffectIndex + 1) % effects.length;
     effects[currentEffectIndex].init(); // Re-initialize the new effect
     startTime = performance.now(); // Reset timer on manual switch
+    updateEffectIndicator(); // Update the indicator
+    console.log('Switched to effect:', currentEffectIndex);
 }
 
 // --- Effect 1: Starfield ---
@@ -647,11 +649,13 @@ physicsBalls.vsSource = `
     uniform mat3 u_normalMatrix;
     varying vec3 v_normal;
     varying vec3 v_position;
+    varying vec3 v_worldPosition;
     
     void main() {
         v_normal = normalize(u_normalMatrix * a_normal);
         vec4 mvPosition = u_modelViewMatrix * vec4(a_position, 1.0);
         v_position = mvPosition.xyz;
+        v_worldPosition = a_position;
         gl_Position = u_projectionMatrix * mvPosition;
     }
 `;
@@ -661,16 +665,27 @@ physicsBalls.fsSource = `
     varying vec3 v_normal;
     varying vec3 v_position;
     uniform vec3 u_lightPosition;
-    uniform vec3 u_ballColor;
+    varying vec3 v_worldPosition;
     
     void main() {
         vec3 normal = normalize(v_normal);
         vec3 lightDir = normalize(u_lightPosition - v_position);
         
-        float diff = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse = diff * u_ballColor;
+        // Calculate checkered pattern based on world position
+        float patternScale = 2.0;
+        vec3 worldPos = v_worldPosition;
+        float checkX = mod(floor(worldPos.x * patternScale), 2.0);
+        float checkY = mod(floor(worldPos.y * patternScale), 2.0);
+        float checkZ = mod(floor(worldPos.z * patternScale), 2.0);
+        float checker = mod(checkX + checkY + checkZ, 2.0);
         
-        vec3 ambient = 0.3 * u_ballColor;
+        // Red and white checkered pattern
+        vec3 baseColor = checker < 0.5 ? vec3(1.0, 0.0, 0.0) : vec3(1.0, 1.0, 1.0);
+        
+        float diff = max(dot(normal, lightDir), 0.0);
+        vec3 diffuse = diff * baseColor;
+        
+        vec3 ambient = 0.3 * baseColor;
         
         vec3 viewDir = normalize(-v_position);
         vec3 reflectDir = reflect(-lightDir, normal);
@@ -913,14 +928,12 @@ let balls = [];
 let walls = [];
 let camera, renderer, scene;
 let sound1, sound2;
-let oldTime = 0, frames = 0, fps = 0;
 let sphereDetail = 32;
-let numberOfBalls = 4;
-let radius = 1;
+let numberOfBalls = 1;
+let radius = 2; // Increased ball size
 let mouseImpulse = 0.1;
 let gravity = new Vec3(0, -0.01, 0);
 let controls = {
-    FPS: 30,
     Gravity: 0.1,
     Speed: 1
 };
@@ -941,58 +954,8 @@ function onWindowResize() {
     }
 }
 
-function onDocumentMouseClick(e) {
-    const mouse = new Vec3(
-        2 * e.clientX / canvas.width - 1,
-        1 - 2 * e.clientY / canvas.height,
-        0.5
-    );
-    
-    // Simple ray-sphere intersection for each ball
-    let closestBall = null;
-    let closestDistance = Infinity;
-    
-    for (let i = 0; i < balls.length; i++) {
-        const ball = balls[i];
-        const ballScreenPos = projectToScreen(ball.position, camera);
-        const distance = Math.sqrt(
-            Math.pow(mouse.x - ballScreenPos.x, 2) + 
-            Math.pow(mouse.y - ballScreenPos.y, 2)
-        );
-        
-        if (distance < closestDistance && distance < 0.1) {
-            closestDistance = distance;
-            closestBall = ball;
-        }
-    }
-    
-    if (closestBall) {
-        const direction = mouse.clone().unproject(camera).sub(camera.position).normalize();
-        const impulse = direction.clone().multiplyScalar(mouseImpulse);
-        
-        // Apply impulse to ball
-        closestBall.v.add(impulse.clone().divideScalar(closestBall.m));
-        
-        // Play sound (simulated)
-        console.log("Ball clicked!");
-    }
-}
 
-function projectToScreen(position, camera) {
-    // Simplified projection - in a real implementation you'd use the projection matrix
-    return {
-        x: (position.x / camera.position.z) * 0.5 + 0.5,
-        y: -(position.y / camera.position.z) * 0.5 + 0.5
-    };
-}
 
-function calculateWallVisibility() {
-    for (let i = 0; i < walls.length; i++) {
-        const wall = walls[i];
-        // Simplified visibility check
-        wall.visible = true;
-    }
-}
 
 function init() {
     // Add event listeners
@@ -1054,40 +1017,27 @@ function init() {
     physicsBalls.lightPositionLocation = gl.getUniformLocation(physicsBalls.program, 'u_lightPosition');
     physicsBalls.ballColorLocation = gl.getUniformLocation(physicsBalls.program, 'u_ballColor');
     
-    // Create balls
-    const colors = [
-        [0.8, 0.2, 0.2], // Red
-        [0.2, 0.8, 0.2], // Green
-        [0.2, 0.2, 0.8], // Blue
-        [0.8, 0.8, 0.2]  // Yellow
-    ];
+    // Create single red ball with sideways rotation
+    const ball = {
+        position: new Vec3(0, 0, 0),
+        v: new Vec3(0.03, 0, 0),
+        rotation: new Vec3(0, 0, Math.PI / 8),
+        w: new Vec3(0, 0.5, 0), // Increased sideways rotation
+        r: radius,
+        m: 1,
+        a: 2 / 3,
+        I: 0,
+        mp: 0,
+        color: [1.0, 0.0, 0.0], // Red
+        modelMatrix: createMat4(),
+        modelViewMatrix: createMat4(),
+        normalMatrix: createMat3()
+    };
     
-    for (let i = 0; i < numberOfBalls; i++) {
-        const ball = {
-            position: new Vec3(
-                2.5 * (3 - i) - 3.75,
-                2.5 * (3 - i) - 3.75,
-                2.5 * (3 - i) - 3.75
-            ),
-            v: new Vec3(0.03, 0, 0),
-            rotation: new Vec3(0, 0, Math.PI / 8),
-            w: new Vec3(0, 0.2 * (2 * (i % 2) - 1), 0),
-            r: radius,
-            m: 1,
-            a: 2 / 3,
-            I: 0,
-            mp: 0,
-            color: colors[i % 4],
-            modelMatrix: createMat4(),
-            modelViewMatrix: createMat4(),
-            normalMatrix: createMat3()
-        };
-        
-        ball.I = ball.a * ball.m * ball.r * ball.r;
-        ball.mp = ball.a * ball.m / (1 + ball.a);
-        
-        balls.push(ball);
-    }
+    ball.I = ball.a * ball.m * ball.r * ball.r;
+    ball.mp = ball.a * ball.m / (1 + ball.a);
+    
+    balls.push(ball);
     
     // Create light
     const lightPosition = [0, 21, 0];
@@ -1125,7 +1075,6 @@ function init() {
         });
     }
     
-    calculateWallVisibility();
     
     // Store buffers and geometry references
     physicsBalls.sphereGeometry = sphereGeometry;
@@ -1251,21 +1200,9 @@ function impulseBall(ball, r, linearImpulse, angularImpulse) {
     ball.w.add(r.clone().cross(linearImpulse).add(angularImpulse).divideScalar(ball.I));
 }
 
-function updateFps(currentTime) {
-    frames++;
-    if (currentTime - oldTime > 1000) {
-        fps = Math.round(1000 * frames / (currentTime - oldTime));
-        oldTime = currentTime;
-        frames = 0;
-        controls.FPS = Math.min(60, fps);
-    }
-}
 
 function animate(currentTime) {
-    requestAnimationFrame(animate);
-    
     updatePhysics();
-    updateFps(currentTime);
     
     // Clear the canvas
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -1315,7 +1252,6 @@ function animate(currentTime) {
         gl.uniformMatrix4fv(physicsBalls.modelViewMatrixLocation, false, modelViewMatrix);
         gl.uniformMatrix3fv(physicsBalls.normalMatrixLocation, false, normalMatrix);
         gl.uniform3fv(physicsBalls.lightPositionLocation, physicsBalls.lightPosition);
-        gl.uniform3fv(physicsBalls.ballColorLocation, ball.color);
         
         // Bind buffers and draw
         gl.bindBuffer(gl.ARRAY_BUFFER, physicsBalls.ballPositionsBuffer);
@@ -1391,12 +1327,14 @@ function animateEffects(currentTime) {
     const elapsed = currentTime - startTime;
     if (elapsed > effectDuration) {
         startTime = currentTime;
-        currentEffectIndex = (currentEffectIndex + 1) % effects.length;
-        effects[currentEffectIndex].init(); // Re-initialize the new effect
+        nextEffect(); // Move to next effect instead of resetting to first
     }
 
     effects[currentEffectIndex].draw(currentTime);
 }
+
+// --- Simple Mouse Click Handler ---
+canvas.addEventListener('click', nextEffect);
 
 // --- Initialization ---
 window.addEventListener('resize', () => {
@@ -1405,21 +1343,30 @@ window.addEventListener('resize', () => {
     // No need to re-init effects on resize, just update uniforms in draw
 });
 
-// Event listeners for manual cycling
-window.addEventListener('click', nextEffect);
-window.addEventListener('keydown', (event) => {
-    if (event.code === 'Space') {
-        nextEffect();
-    }
-});
 
-// Add mouse click event for physics balls
-window.addEventListener('click', (e) => {
-    if (effects[currentEffectIndex] === physicsBalls) {
-        onDocumentMouseClick(e);
-    }
-});
+
+
+// Create effect indicator
+const effectIndicator = document.createElement('div');
+effectIndicator.style.position = 'fixed';
+effectIndicator.style.top = '10px';
+effectIndicator.style.right = '10px';
+effectIndicator.style.background = 'rgba(0, 0, 0, 0.7)';
+effectIndicator.style.color = 'white';
+effectIndicator.style.padding = '10px';
+effectIndicator.style.borderRadius = '5px';
+effectIndicator.style.fontSize = '14px';
+effectIndicator.style.zIndex = '1000';
+effectIndicator.style.pointerEvents = 'none';
+document.body.appendChild(effectIndicator);
+
+// Update effect indicator
+function updateEffectIndicator() {
+    const effectNames = ['Starfield', 'Plasma', 'Sine Wave', 'Color Cycle', 'Tunnel', 'Metaballs', 'RotoZoomer', 'Wave Distortion', 'Fire', 'Physics Balls'];
+    effectIndicator.textContent = `Effect: ${effectNames[currentEffectIndex]} (${currentEffectIndex + 1}/${effects.length})`;
+}
 
 // Initial setup for the first effect
 effects[currentEffectIndex].init();
+updateEffectIndicator();
 animateEffects(performance.now());
