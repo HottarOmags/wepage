@@ -201,16 +201,16 @@ gl.bufferData(gl.ARRAY_BUFFER, quadPositions, gl.STATIC_DRAW);
 let currentEffectIndex = 0;
 const effects = [];
 let startTime = performance.now();
-const effectDuration = 5000; // 5 seconds per effect
+const effectDuration = 6500; // in milliseconds
 
 // Centralized effect ordering by name. Reorder this array to change play order.
 const EFFECT_ORDER = [
-    'Starfield',
-    'Water',
-    'Plasma',
     'Sine Wave',
-    'Tunnel',
+    'Starfield',
+    'Plasma',
     'Boing Ball',
+    'Water',
+    'Tunnel',
     'Shadebobs',
     'Flame 2025',
     'Color Cycle',
@@ -911,44 +911,88 @@ metaballs.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
-    const int NUM_BALLS = 12;
+    const int NUM_BALLS = 22;
     uniform vec2 u_ballPositions[NUM_BALLS];
     uniform float u_ballRadii[NUM_BALLS];
 
+    // Smooth isosurface helper
+    float smoothIso(float v, float iso, float k){
+        return 1.0 - smoothstep(iso - k, iso + k, v);
+    }
+
+    // Totally new palette: electric lime/citron -> aqua -> indigo -> deep violet
+    // Distinct from previous warm scheme
+    vec3 palette(float t){
+        t = clamp(t, 0.0, 1.0);
+        vec3 c1 = vec3(0.80, 0.95, 0.10); // electric lime
+        vec3 c2 = vec3(0.10, 0.95, 0.85); // aqua-mint
+        vec3 c3 = vec3(0.25, 0.25, 0.95); // indigo
+        vec3 c4 = vec3(0.55, 0.10, 0.75); // deep violet
+        // segmented cubic blends
+        if (t < 0.33) {
+            float k = smoothstep(0.0, 0.33, t);
+            return mix(c1, c2, k);
+        } else if (t < 0.66) {
+            float k = smoothstep(0.33, 0.66, t);
+            return mix(c2, c3, k);
+        } else {
+            float k = smoothstep(0.66, 1.0, t);
+            return mix(c3, c4, k);
+        }
+    }
+
     void main() {
         vec2 uv = gl_FragCoord.xy / u_resolution;
-        float value = 0.0;
+
+        // Accumulate scalar field and gradient
+        float field = 0.0;
+        vec2 grad = vec2(0.0);
 
         for (int i = 0; i < NUM_BALLS; i++) {
-            float dist = distance(uv, u_ballPositions[i]);
-            value += u_ballRadii[i] / dist;
+            vec2 p = u_ballPositions[i];
+            float r = u_ballRadii[i];
+            vec2 d = uv - p;
+            float dist = max(length(d), 1e-4);
+            float contrib = r / dist;
+            field += contrib;
+            grad += (-r) * d / (dist*dist*dist);
         }
+        // mild time-based breathing to keep surface lively
+        field += 0.15 * sin(u_time * 1.3 + uv.x*10.0 + uv.y*9.0);
 
-        
-        vec3 color = vec3(0.0);
-        if (value > 8.5) {
-            color = vec3(0.35, 0.22, 1.00); 
-        } else if (value > 7.0) {
-            color = vec3(0.2, 0.3, 1.00);
-        } else if (value > 6.0) {
-            color = vec3(0.00, 0.3, 1.00);
-        } else if (value > 5.2) {
-            color = vec3(0.00, 0.38, 1.00);
-        } else if (value > 4.5) {
-            color = vec3(0.00, 0.50, 1.00);
-        } else if (value > 3.9) {
-            color = vec3(0.00, 0.62, 1.00);
-        } else if (value > 3.3) {
-            color = vec3(0.00, 0.74, 1.00);
-        } else if (value > 2.8) {
-            color = vec3(0.00, 0.86, 1.00);
-        } else if (value > 2.3) {
-            color = vec3(0.00, 0.98, 1.00); // near-cyan
-        } else if (value > 1.9) {
-            color = vec3(0.20, 1.00, 1.00); // bright low band
-        }
- 
-        gl_FragColor = vec4(color, 1.0);
+        // Isosurface threshold controls blob size
+        float iso = 7.0; // slightly higher to compensate for more blobs
+
+        // Soft zones
+        float body = smoothIso(field, iso, 0.32);
+        float inner = smoothIso(field, iso + 1.0, 0.6);
+        float glow  = smoothIso(field, iso - 0.9, 0.9);
+
+        // Simple lighting from gradient
+        vec2 n2 = normalize(grad + 1e-6);
+        vec3 N = normalize(vec3(n2, 0.6));
+        vec3 L = normalize(vec3(0.3, 0.5, 0.85));
+        float diff = max(dot(N, L), 0.0);
+
+        // Rim for nicer edge
+        float rim = pow(1.0 - N.z, 2.0);
+
+        // Color driven by field intensity
+        float tcol = clamp((field - (iso - 1.8)) / 3.6, 0.0, 1.0);
+        vec3 base = palette(tcol);
+
+        // Compose
+        vec3 col = vec3(0.0);
+        col += base * (0.22 + 0.88*diff) * body;                 // lit body
+        col += palette(min(1.0, tcol*1.2)) * inner * 0.65;         // core tint
+        col += mix(vec3(0.10,0.95,0.85), vec3(0.55,0.10,0.75), 0.45) * glow * 0.6; // halo with new palette endpoints
+        col += vec3(0.95, 1.0, 0.98) * rim * body * 0.28;          // subtle rim (cooler)
+
+        // Background and blend
+        vec3 bg = vec3(0.01, 0.02, 0.035); // slightly cooler/darker background
+        vec3 finalCol = mix(bg, col, clamp(body + glow*0.75, 0.0, 1.0));
+
+        gl_FragColor = vec4(max(finalCol, 0.0), 1.0);
     }
 `;
 
@@ -966,13 +1010,13 @@ metaballs.init = () => {
     metaballs.ballRadiiUniformLocation = gl.getUniformLocation(metaballs.program, 'u_ballRadii');
 
     metaballs.ballData = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 22; i++) {
         metaballs.ballData.push({
             x: Math.random(),
             y: Math.random(),
-            radius: Math.random() * 0.1 + 0.05,
-            speedX: (Math.random() - 0.5) * 0.001,
-            speedY: (Math.random() - 0.5) * 0.001
+            radius: Math.random() * 0.085 + 0.04,
+            speedX: (Math.random() - 0.5) * 0.0014,
+            speedY: (Math.random() - 0.5) * 0.0014
         });
     }
 };
@@ -2019,3 +2063,4 @@ if (!gl) {
     updateEffectIndicator();
     animateEffects(performance.now());
 }
+
