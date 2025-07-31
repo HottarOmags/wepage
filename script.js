@@ -225,7 +225,6 @@ const EFFECT_ORDER = [
     'Metaballs',
     'RotoZoomer',
     'Wave Distortion',
-    'Fire',
     'Kaleidoscope Tunnel',
     'Voronoi Flow',
     'Tunnel'
@@ -1275,107 +1274,6 @@ voronoiFlow.draw = (time) => {
 };
 voronoiFlow.name = 'Voronoi Flow';
 effects.push(voronoiFlow);
-
-// --- Effect 8: Fire Flames (Amiga Demoscene Style) ---
-const fire = {};
-fire.vsSource = quadVS;
-fire.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
-
-    // Improved noise function for smoother fire
-    float noise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float a = fract(sin(dot(i, vec2(12.9898, 78.233))) * 43758.5453);
-        float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(12.9898, 78.233))) * 43758.5453);
-        float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-        float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    // Fractal Brownian Motion for more natural fire patterns
-    float fbm(vec2 p) {
-        float value = 0.0;
-        float amplitude = 0.5;
-        for (int i = 0; i < 4; i++) {
-            value += amplitude * noise(p);
-            p *= 2.0;
-            amplitude *= 0.5;
-        }
-        return value;
-    }
-
-    // Fire palette - more realistic fire colors
-    vec3 firePalette(float t) {
-        vec3 color = vec3(0.0);
-        // Dark red to bright yellow
-        color.r = min(1.0, 2.0 * t);
-        color.g = min(1.0, 2.0 * t * t);
-        color.b = min(1.0, 2.0 * t * t * t);
-        return color;
-    }
-
-    void main() {
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-        
-        // Flip Y to make fire rise upward
-        uv.y = 1.0 - uv.y;
-        
-        // Time-based movement
-        float time = u_time * 0.3;
-        
-        // Create fire pattern with fbm
-        vec2 firePos = vec2(uv.x * 3.0 + time * 0.2, uv.y * 5.0 + time);
-        float firePattern = fbm(firePos);
-        
-        // Shape the fire to be stronger at the bottom
-        float fireShape = (1.0 - uv.y) * 1.5;
-        firePattern *= fireShape;
-        
-        // Add some vertical streaks for flame effect
-        firePattern += 0.1 * sin(uv.x * 20.0 + time * 2.0) * (1.0 - uv.y);
-        
-        // Enhance contrast for more defined flames
-        firePattern = pow(firePattern, 1.5);
-        
-        // Apply color palette
-        vec3 color = firePalette(firePattern);
-        
-        // Fade out at the top for more realistic flames
-        color *= (1.0 - pow(uv.y, 3.0));
-        
-        gl_FragColor = vec4(color, 1.0);
-    }
-`;
-
-fire.init = () => {
-    fire.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, fire.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, fire.fsSource)
-    );
-    gl.useProgram(fire.program);
-
-    fire.positionAttributeLocation = gl.getAttribLocation(fire.program, 'a_position');
-    fire.resolutionUniformLocation = gl.getUniformLocation(fire.program, 'u_resolution');
-    fire.timeUniformLocation = gl.getUniformLocation(fire.program, 'u_time');
-};
-
-fire.draw = (time) => {
-    gl.useProgram(fire.program);
-    gl.uniform2f(fire.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(fire.timeUniformLocation, time / 1000.0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(fire.positionAttributeLocation);
-    gl.vertexAttribPointer(fire.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-fire.name = 'Fire';
-effects.push(fire);
 
 // --- Amiga Boing Ball Effect (WebGL) ---
 const boingBall = {};
