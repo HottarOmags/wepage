@@ -1610,6 +1610,217 @@ voronoiFlow.draw = (time) => {
 };
 voronoiFlow.name = 'Voronoi Flow';
 effects.push(voronoiFlow);
+// --- Effect: Hex Lattice Warp (brand-new) ---
+const hexLatticeWarp = {};
+hexLatticeWarp.vsSource = quadVS;
+hexLatticeWarp.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Hex coordinate helper: converts to axial hex coords
+    // Reference technique: project onto skewed basis for hex tiling
+    vec3 hex(vec2 p){
+        // Skew basis
+        const vec2 a = vec2(1.0, 0.0);
+        const vec2 b = vec2(0.5, 0.86602540378); // sin/cos 60deg
+        float q = (2.0/3.0) * p.x;
+        float r = (-1.0/3.0) * p.x + (0.57735026919) * p.y; // 1/sqrt(3)
+        // fractional axial
+        float rq = floor(q + 0.5);
+        float rr = floor(r + 0.5);
+        float rs = floor(-q - r + 0.5);
+        float dq = q - rq;
+        float dr = r - rr;
+        // cartesian local coords inside cell center
+        // convert back using basis
+        vec2 center = (rq)*a + (rr)*b;
+        vec2 local = p - center;
+        return vec3(local, 0.0);
+    }
+
+    // Compute hex cell center distance and edge distance approximately
+    // Using nearest of 7 sample points (center + 6 neighbors)
+    float hexEdge(vec2 p, float scale){
+        // Scale UV into hex space
+        vec2 hp = p / scale;
+        // axial neighbors
+        vec2 n[7];
+        n[0]=vec2(0.0,0.0);
+        n[1]=vec2(1.0,0.0);
+        n[2]=vec2(0.5,0.8660254);
+        n[3]=vec2(-0.5,0.8660254);
+        n[4]=vec2(-1.0,0.0);
+        n[5]=vec2(-0.5,-0.8660254);
+        n[6]=vec2(0.5,-0.8660254);
+
+        // Find local position to nearest center
+        // Rough nearest search by rounding axial coords
+        float q = (2.0/3.0) * hp.x;
+        float r = (-1.0/3.0) * hp.x + (0.57735026919) * hp.y;
+        float rq = floor(q + 0.5);
+        float rr = floor(r + 0.5);
+        vec2 base = vec2(rq + rr*0.5, rr*0.8660254);
+
+        float dmin = 1e9;
+        vec2 best = vec2(0.0);
+        for(int i=0;i<7;i++){
+            vec2 c = base + n[i];
+            vec2 d = hp - c;
+            float dd = dot(d,d);
+            if(dd < dmin){ dmin = dd; best = d; }
+        }
+
+        // Distance to hex edges in local coordinates of best cell:
+        // Use distance to edges of regular hex (apothem = 0.8660254)
+        // Project onto three axes
+        vec2 l = best;
+        float a = abs(l.x);
+        float b = abs(0.5*l.x + 0.8660254*l.y);
+        float c = abs(-0.5*l.x + 0.8660254*l.y);
+        float edge = max(a, max(b, c)); // distance in edge metric
+        // Normalize: edge ~ 0 at center, ~0.866 at edge; map to [0..1]
+        float ed = smoothstep(0.70, 0.86, edge);
+        return ed;
+    }
+
+    // Flow noise helpers
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<4;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Cool neon palette distinct from others: teal -> purple -> amber cycling
+    vec3 palette(float t){
+        vec3 c1 = vec3(0.05, 0.9, 0.9);
+        vec3 c2 = vec3(0.65, 0.2, 0.95);
+        vec3 c3 = vec3(1.0, 0.7, 0.15);
+        float s = smoothstep(0.0, 0.5, t) * (1.0 - smoothstep(0.5, 1.0, t))*2.0;
+        // two-stage blend
+        vec3 a = mix(c1, c2, smoothstep(0.0, 0.5, t));
+        vec3 b = mix(c2, c3, smoothstep(0.5, 1.0, t));
+        return mix(a, b, step(0.5, t));
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time;
+
+        // Parallax multi-scale hex lattice
+        // Three layers with different scales and speeds
+        float s1 = 0.75;
+        float s2 = 0.45;
+        float s3 = 0.25;
+
+        // Domain warps for each layer to make it fluid and "surprising"
+        vec2 w1 = 0.18 * vec2(
+            fbm(p*1.1 + vec2(t*0.21, -t*0.17)),
+            fbm(p*1.0 + vec2(-t*0.19, t*0.23))
+        );
+        vec2 w2 = 0.28 * vec2(
+            fbm(p*2.3 + vec2(-t*0.11, t*0.15)),
+            fbm(p*2.1 + vec2(t*0.09, -t*0.07))
+        );
+        vec2 w3 = 0.42 * vec2(
+            fbm(p*3.7 + vec2(t*0.035, t*0.027)),
+            fbm(p*3.2 + vec2(-t*0.031, -t*0.044))
+        );
+
+        // Subtle swirl/spiral drift
+        float ang = 0.12 * t;
+        mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
+        vec2 q1 = R * (p + w1 * 0.6);
+        vec2 q2 = R * (p*1.3 + w2);
+        vec2 q3 = R * (p*1.7 + w3);
+
+        float e1 = hexEdge(q1, s1);
+        float e2 = hexEdge(q2, s2);
+        float e3 = hexEdge(q3, s3);
+
+        // Edge brightness and core glow
+        float edgeNeon = pow(smoothstep(0.75, 1.0, e1)*0.8 + smoothstep(0.72, 1.0, e2)*0.7 + smoothstep(0.70, 1.0, e3)*0.6, 1.4);
+
+        // Cell center pulses using fbm in each layer
+        float cellPulse = 0.0;
+        cellPulse += 0.55 * (0.5 + 0.5*sin(8.0*fbm(q1*1.2 + t*0.3) + t*1.1));
+        cellPulse += 0.35 * (0.5 + 0.5*sin(10.0*fbm(q2*1.7 - t*0.2) + t*0.9));
+        cellPulse += 0.25 * (0.5 + 0.5*sin(12.0*fbm(q3*2.0 + t*0.1) + t*0.7));
+
+        // Depth-vignette and scanline accent
+        float vig = 0.92 - 0.55 * dot(p,p);
+        float scan = 0.025 * sin(gl_FragCoord.y * 3.14159 + t * 3.2);
+
+        // Time-driven hue with spatial variation
+        float hue = fract(0.5 + 0.3*sin(t*0.37) + 0.2*sin(p.x*1.8 + p.y*1.3 + t*0.6));
+        vec3 base = palette(hue);
+
+        // Compose colors: neon edges tinted towards cyan/magenta, cores toward amber
+        vec3 edgeCol = mix(vec3(0.0, 0.9, 1.0), vec3(0.9, 0.2, 1.0), 0.5 + 0.5*sin(t*0.5));
+        vec3 coreCol = mix(vec3(1.0, 0.7, 0.15), base, 0.4);
+
+        vec3 col = vec3(0.0);
+        col += edgeCol * edgeNeon * 0.95;
+        col += coreCol * cellPulse * 0.55;
+        col = mix(col, base, 0.20);
+
+        col *= clamp(vig, 0.25, 1.0);
+        col += vec3(scan) * 0.03;
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+
+hexLatticeWarp.init = () => {
+    hexLatticeWarp.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, hexLatticeWarp.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, hexLatticeWarp.fsSource)
+    );
+    gl.useProgram(hexLatticeWarp.program);
+    hexLatticeWarp.positionAttributeLocation = gl.getAttribLocation(hexLatticeWarp.program, 'a_position');
+    hexLatticeWarp.resolutionUniformLocation = gl.getUniformLocation(hexLatticeWarp.program, 'u_resolution');
+    hexLatticeWarp.timeUniformLocation = gl.getUniformLocation(hexLatticeWarp.program, 'u_time');
+};
+hexLatticeWarp.draw = (time) => {
+    gl.useProgram(hexLatticeWarp.program);
+    gl.uniform2f(hexLatticeWarp.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(hexLatticeWarp.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(hexLatticeWarp.positionAttributeLocation);
+    gl.vertexAttribPointer(hexLatticeWarp.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+hexLatticeWarp.name = 'Hex Lattice Warp';
+effects.push(hexLatticeWarp);
+
+// Ensure it appears in the centralized order (added near the end for contrast)
+(function ensureOrder(){
+    const name = 'Hex Lattice Warp';
+    if (!EFFECT_ORDER.includes(name)) {
+        EFFECT_ORDER.push(name);
+    }
+    applyEffectOrder();
+})();
 
 // --- Amiga Boing Ball Effect (WebGL) ---
 const boingBall = {};
