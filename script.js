@@ -11,7 +11,7 @@ canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
 // Debug toggle and FPS tracking
-const DEBUG_INFO = true; // set to true/false to show/hide on-screen effect info
+const DEBUG_INFO = false; // set to true/false to show/hide on-screen effect info
 let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
 
@@ -42,6 +42,12 @@ const EFFECT_ORDER = [
     'Hex Lattice Warp',
     'Chromatic Voronoi Bloom'
 ];
+
+// --- Effect Management ---
+let currentEffectIndex = 0;
+const effects = [];
+let startTime = performance.now();
+const effectDuration = 7500; // in milliseconds
 
 // --- Minimal Matrix Helpers (mat4/mat3) for Boing Ball ---
 function createMat4() {
@@ -203,7 +209,6 @@ function applyEffectOrder() {
     for (const e of ordered) effects.push(e);
 }
 
-// (removed duplicate applyEffectOrder)
 
 // --- Full-screen Quad (for pixel-based effects) ---
 const quadVS = `
@@ -226,13 +231,9 @@ const quadBuffer = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
 gl.bufferData(gl.ARRAY_BUFFER, quadPositions, gl.STATIC_DRAW);
 
-// --- Effect Management ---
-let currentEffectIndex = 0;
-const effects = [];
-let startTime = performance.now();
-const effectDuration = 7500; // in milliseconds
 
-// EFFECT_ORDER moved to top; keep only one declaration.
+
+
 
 function nextEffect() {
     if (!effects.length) {
@@ -408,7 +409,7 @@ auroraMoireBloom.draw = (time) => {
 auroraMoireBloom.name = 'Aurora Moiré Bloom';
 effects.push(auroraMoireBloom);
 
-// --- Effect 0: Neon Fractal Bloom (new demoscene raymarch) ---
+// --- Effect  Neon Fractal Bloom ---
 const neonFractalBloom = {};
 neonFractalBloom.vsSource = quadVS;
 neonFractalBloom.fsSource = `
@@ -1699,7 +1700,7 @@ kaleidoscope.draw = (time) => {
 kaleidoscope.name = 'Kaleidoscope Tunnel';
 effects.push(kaleidoscope);
 
-// --- Effect 14: Flame 2025 (Modern Stylized Fire) ---
+// --- Effect 14: Flame 2025 ---
 const flame2025 = {};
 flame2025.vsSource = quadVS;
 flame2025.fsSource = `
