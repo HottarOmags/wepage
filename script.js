@@ -217,6 +217,7 @@ const effectDuration = 5000; // 5 seconds per effect
 // Centralized effect ordering by name. Reorder this array to change play order.
 const EFFECT_ORDER = [
     'Starfield',
+    'Shadebobs',
     'Plasma',
     'Sine Wave',
     'Color Cycle',
@@ -226,10 +227,9 @@ const EFFECT_ORDER = [
     'Wave Distortion',
     'Fire',
     'Kaleidoscope Tunnel',
-    'RGB Split Glitch',
+    // 'RGB Split Glitch', // removed from rotation
     'Voronoi Flow',
     'Tunnel'
-
 ];
 
 // Centralized effect ordering by name. Reorder this array to change play order.
@@ -599,6 +599,212 @@ tunnel.draw = (time) => {
 tunnel.name = 'Tunnel';
 effects.push(tunnel);
 
+// --- Effect 6: Shadebobs (Old-school + Pimped) ---
+const shadebobs = {};
+shadebobs.vsSource = quadVS;
+shadebobs.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // pseudo-random
+    float hash(float n){ return fract(sin(n)*43758.5453123); }
+    vec2 hash2(float n){ return fract(sin(vec2(n,n+1.23))*vec2(43758.5453,22578.145912)); }
+
+    // gaussian-ish falloff
+    float blob(vec2 p, vec2 c, float r){
+        float d = length(p - c);
+        float g = exp(- (d*d) / (2.0*r*r));
+        return g;
+    }
+
+    // neon palette
+    vec3 palette(float t){
+        vec3 a = vec3(0.55,0.45,0.65);
+        vec3 b = vec3(0.45,0.55,0.45);
+        vec3 c = vec3(1.00,1.00,1.00);
+        vec3 d = vec3(0.10,0.33,0.67);
+        return a + b * cos(6.28318 * (c*(t + d)));
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time * 0.55;
+
+        // slight domain warp for extra motion
+        vec2 warp = vec2(
+            0.02 * sin(p.y*6.0 + t*2.0),
+            0.02 * cos(p.x*6.0 - t*2.2)
+        );
+        p += warp;
+
+        // parameters
+        const int N = 16;
+        float radius = 0.23;
+        float accum = 0.0;
+        vec3 col = vec3(0.0);
+
+        // additive shadebobs
+        for(int i=0;i<N;i++){
+            float fi = float(i);
+            // Lissajous-ish paths
+            float sp1 = 0.6 + 0.3*hash(fi*7.31);
+            float sp2 = 0.7 + 0.35*hash(fi*3.77);
+            float ph1 = 6.2831853*hash(fi*5.19);
+            float ph2 = 6.2831853*hash(fi*9.17);
+            float ax  = 0.55 + 0.25*hash(fi*2.01);
+            float ay  = 0.40 + 0.35*hash(fi*4.13);
+
+            vec2 c = vec2(
+                ax * sin(t*sp1 + ph1),
+                ay * sin(t*sp2 + ph2)
+            );
+
+            float r = radius * (0.65 + 0.5*hash(fi*1.11));
+            float b = blob(p, c, r);
+            accum += b;
+
+            float hue = fract(0.15*fi + 0.35*sin(t*0.7 + fi*0.37));
+            vec3 bc = palette(hue);
+            col += bc * b;
+        }
+
+        // normalize/soft threshold for bloom-y look
+        float soft = smoothstep(0.12, 0.6, accum);
+        col = col / max(1.0, float(N)*0.6);
+        col += col * pow(soft, 3.0) * 0.9;
+
+        // subtle chromatic aberration
+        vec2 ca = (p)*0.004;
+        float r = col.r + 0.10 * texture2DProj(sampler2D(0), vec4(uv+ca,0.0,1.0)).r; // stub: no real sampler, emulate
+        float g = col.g;
+        float b = col.b + 0.10 * texture2DProj(sampler2D(0), vec4(uv-ca,0.0,1.0)).b;
+        col = vec3(r,g,b);
+
+        // vignette
+        float vig = 0.92 - 0.55*dot(p,p);
+        col *= clamp(vig, 0.25, 1.0);
+
+        // scanlines
+        float scan = 0.04 * sin(gl_FragCoord.y*3.14159 + t*3.0);
+        col += vec3(scan)*0.03;
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+`;
+
+// Note: WebGL1 has no default sampler2D bound; above CA "sampler2D" usage is a stub to fake the effect:
+// We'll remove the texture fetch but keep a tiny RGB phase offset to emulate CA visually without textures.
+shadebobs.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    float hash(float n){ return fract(sin(n)*43758.5453123); }
+    vec2 hash2(float n){ return fract(sin(vec2(n,n+1.23))*vec2(43758.5453,22578.145912)); }
+
+    float blob(vec2 p, vec2 c, float r){
+        float d = length(p - c);
+        return exp(- (d*d) / (2.0*r*r));
+    }
+
+    vec3 palette(float t){
+        vec3 a = vec3(0.55,0.45,0.65);
+        vec3 b = vec3(0.45,0.55,0.45);
+        vec3 c = vec3(1.00,1.00,1.00);
+        vec3 d = vec3(0.10,0.33,0.67);
+        return a + b * cos(6.28318 * (c*(t + d)));
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time * 0.55;
+
+        vec2 warp = vec2(
+            0.02 * sin(p.y*6.0 + t*2.0),
+            0.02 * cos(p.x*6.0 - t*2.2)
+        );
+        p += warp;
+
+        const int N = 16;
+        float radius = 0.23;
+        float accum = 0.0;
+        vec3 col = vec3(0.0);
+
+        for(int i=0;i<N;i++){
+            float fi = float(i);
+            float sp1 = 0.6 + 0.3*hash(fi*7.31);
+            float sp2 = 0.7 + 0.35*hash(fi*3.77);
+            float ph1 = 6.2831853*hash(fi*5.19);
+            float ph2 = 6.2831853*hash(fi*9.17);
+            float ax  = 0.55 + 0.25*hash(fi*2.01);
+            float ay  = 0.40 + 0.35*hash(fi*4.13);
+
+            vec2 c = vec2(
+                ax * sin(t*sp1 + ph1),
+                ay * sin(t*sp2 + ph2)
+            );
+
+            float r = radius * (0.65 + 0.5*hash(fi*1.11));
+            float b = blob(p, c, r);
+            accum += b;
+
+            float hue = fract(0.15*fi + 0.35*sin(t*0.7 + fi*0.37));
+            vec3 bc = palette(hue);
+            col += bc * b;
+        }
+
+        float soft = smoothstep(0.12, 0.6, accum);
+        col = col / max(1.0, float(N)*0.6);
+        col += col * pow(soft, 3.0) * 0.9;
+
+        // emulate slight RGB split by phase-shifting color channels with p
+        float rOff = 0.03*sin(3.0*p.x + 2.0*p.y + t*1.7);
+        float bOff = 0.03*sin(2.7*p.y - 1.4*p.x - t*1.3);
+        col.r += rOff * 0.15;
+        col.b += bOff * 0.15;
+
+        float vig = 0.92 - 0.55*dot(p,p);
+        col *= clamp(vig, 0.25, 1.0);
+
+        float scan = 0.04 * sin(gl_FragCoord.y*3.14159 + t*3.0);
+        col += vec3(scan)*0.03;
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+
+shadebobs.init = () => {
+    shadebobs.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, shadebobs.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, shadebobs.fsSource)
+    );
+    gl.useProgram(shadebobs.program);
+    shadebobs.positionAttributeLocation = gl.getAttribLocation(shadebobs.program, 'a_position');
+    shadebobs.resolutionUniformLocation = gl.getUniformLocation(shadebobs.program, 'u_resolution');
+    shadebobs.timeUniformLocation = gl.getUniformLocation(shadebobs.program, 'u_time');
+};
+
+shadebobs.draw = (time) => {
+    gl.useProgram(shadebobs.program);
+    gl.uniform2f(shadebobs.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(shadebobs.timeUniformLocation, time / 1000.0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(shadebobs.positionAttributeLocation);
+    gl.vertexAttribPointer(shadebobs.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+shadebobs.name = 'Shadebobs';
+effects.push(shadebobs);
+
 // --- Effect 7: Metaballs ---
 const metaballs = {};
 metaballs.vsSource = quadVS;
@@ -940,80 +1146,6 @@ kaleidoscope.name = 'Kaleidoscope Tunnel';
 effects.push(kaleidoscope);
 
 // --- Effect 14: RGB Split Glitch ---
-const rgbGlitch = {};
-rgbGlitch.vsSource = quadVS;
-rgbGlitch.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
-
-    // Fake background pattern to glitch
-    vec3 basePattern(vec2 uv, float t){
-        float a = sin(uv.x * 8.0 + t * 0.7) * 0.5 + 0.5;
-        float b = sin(uv.y * 10.0 - t * 1.1) * 0.5 + 0.5;
-        float c = sin((uv.x + uv.y) * 6.0 + t * 0.9) * 0.5 + 0.5;
-        return vec3(a, b, c);
-    }
-
-    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
-
-    void main(){
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-        float t = u_time;
-
-        // Blocky glitch mask
-        vec2 grid = floor(uv * vec2(48.0, 28.0));
-        float g = step(0.85, hash(grid + floor(t * 2.0)));
-
-        // Horizontal scan jumps
-        float jump = step(0.97, fract(sin((uv.y + t * 0.25) * 12.3) * 43758.23));
-        float shift = (g * 0.02 + jump * 0.03) * sin(t * 10.0);
-
-        // Chromatic offsets
-        vec2 offR = vec2( shift, 0.0);
-        vec2 offG = vec2(-shift, 0.0);
-        vec2 offB = vec2( 0.0 , shift * 0.5);
-
-        vec3 r = basePattern(uv + offR, t);
-        vec3 gch = basePattern(uv + offG, t);
-        vec3 b = basePattern(uv + offB, t);
-
-        vec3 col = vec3(r.r, gch.g, b.b);
-
-        // Add noise speckles
-        float n = hash(gl_FragCoord.xy + floor(t * 60.0));
-        col += (n - 0.5) * 0.08;
-
-        // Slight vignette
-        vec2 p = uv * 2.0 - 1.0;
-        p.x *= u_resolution.x / u_resolution.y;
-        float vig = 1.0 - 0.25 * dot(p,p);
-        col *= clamp(vig, 0.3, 1.0);
-
-        gl_FragColor = vec4(col, 1.0);
-    }
-`;
-rgbGlitch.init = () => {
-    rgbGlitch.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, rgbGlitch.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, rgbGlitch.fsSource)
-    );
-    gl.useProgram(rgbGlitch.program);
-    rgbGlitch.positionAttributeLocation = gl.getAttribLocation(rgbGlitch.program, 'a_position');
-    rgbGlitch.resolutionUniformLocation = gl.getUniformLocation(rgbGlitch.program, 'u_resolution');
-    rgbGlitch.timeUniformLocation = gl.getUniformLocation(rgbGlitch.program, 'u_time');
-};
-rgbGlitch.draw = (time) => {
-    gl.useProgram(rgbGlitch.program);
-    gl.uniform2f(rgbGlitch.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(rgbGlitch.timeUniformLocation, time / 1000.0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(rgbGlitch.positionAttributeLocation);
-    gl.vertexAttribPointer(rgbGlitch.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-rgbGlitch.name = 'RGB Split Glitch';
-effects.push(rgbGlitch);
 
 // --- Effect 15: Voronoi Flow ---
 const voronoiFlow = {};
@@ -1023,38 +1155,47 @@ voronoiFlow.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
+    // hash helpers
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    vec2  hash2(vec2 p){ return vec2(hash(p), hash(p+13.1)); }
 
-    vec2 hash2(vec2 p){
-        float n = hash(p);
-        return vec2(n, hash(p + n));
+    // animated jittered feature point inside each cell
+    vec2 jitter(vec2 cell, float t){
+        vec2 h = hash2(cell);
+        float ang = 6.2831853 * h.x + t * (0.3 + 0.4*h.y);
+        float rad = 0.35 + 0.25 * sin(t*0.7 + h.x*6.0);
+        return vec2(cos(ang), sin(ang)) * rad;
     }
 
-    // 2D Voronoi distance and id
-    vec3 voronoi(vec2 p){
+    // compute F1 and F2 distances and direction to nearest site
+    // returns: F1, F2, dirToNearest
+    vec4 voronoiF1F2(vec2 p, float t){
         vec2 g = floor(p);
         vec2 f = fract(p);
-        float md = 8.0;
-        vec2  mr = vec2(0.0);
-        vec2  mi = vec2(0.0);
+        float F1 = 1e9;
+        float F2 = 1e9;
+        vec2  dir = vec2(0.0);
+
         for(int j=-1;j<=1;j++){
             for(int i=-1;i<=1;i++){
                 vec2 o = vec2(float(i), float(j));
-                vec2 r = hash2(g + o) - 0.5;
-                vec2 rp = o + r + 0.5 - f;
-                float d = dot(rp, rp);
-                if(d < md){
-                    md = d;
-                    mr = rp;
-                    mi = g + o;
+                vec2 site = o + 0.5 + jitter(g + o, t);
+                vec2 r = site - f;
+                float d = dot(r,r);
+                if(d < F1){
+                    F2 = F1;
+                    F1 = d;
+                    dir = r;
+                } else if(d < F2){
+                    F2 = d;
                 }
             }
         }
-        return vec3(sqrt(md), mr);
+        return vec4(sqrt(F1), sqrt(F2), dir);
     }
 
     vec3 palette(float t){
-        vec3 a = vec3(0.45,0.40,0.55);
+        vec3 a = vec3(0.42,0.40,0.55);
         vec3 b = vec3(0.55,0.45,0.60);
         vec3 c = vec3(1.0,1.0,1.0);
         vec3 d = vec3(0.00,0.33,0.67);
@@ -1066,35 +1207,37 @@ voronoiFlow.fsSource = `
         vec2 p = uv * 2.0 - 1.0;
         p.x *= u_resolution.x / u_resolution.y;
 
-        float t = u_time * 0.5;
+        float t = u_time * 0.6;
 
-        // Domain warp for flow
-        vec2 q = p;
-        q += 0.35 * vec2(
-            sin(p.y * 2.7 + t * 1.2),
-            cos(p.x * 2.9 - t * 1.1)
-        );
+        // gentle domain warp to avoid static grid feel
+        vec2 warp = vec2(
+            sin(p.y*2.3 + t*0.9),
+            cos(p.x*2.7 - t*1.1)
+        ) * 0.25;
+        vec2 q = (p + warp) * 3.0;
 
-        // Animate cell positions by shifting space
-        vec3 v = voronoi(q * 3.0 + t);
+        // compute voronoi
+        vec4 vf = voronoiF1F2(q, t);
+        float d1 = vf.x;
+        float d2 = vf.y;
+        vec2  dir = vf.zw;
 
-        float d = v.x;         // distance to cell center
-        vec2  dir = v.yz;      // direction to center
+        // border metric: distance between F1 and F2 gives crisp edges
+        float edge = smoothstep(0.02, 0.0, d2 - d1);
+        // inner rim near center
+        float rim  = 1.0 - smoothstep(0.10, 0.22, d1);
 
-        // Edge highlight (cell borders)
-        float edge = smoothstep(0.02, 0.0, abs(d - 0.25));
-        float rim  = smoothstep(0.12, 0.0, d);
-
-        // Flow brightness using direction and time
-        float flow = 0.5 + 0.5 * sin(dot(dir, vec2(3.1,2.7)) * 4.0 + t * 3.0);
+        // advected phase along direction field for flowing color
+        float phase = atan(dir.y, dir.x) + length(q) * 0.3 + t*1.4;
+        float flow = 0.5 + 0.5 * sin(phase);
 
         vec3 col = palette(flow);
-        col += vec3(0.2, 0.9, 1.0) * edge * 0.7;
-        col += vec3(1.0, 0.3, 0.8) * rim * 0.25;
+        col += vec3(0.20, 0.90, 1.00) * edge * 0.85;   // neon borders
+        col += vec3(1.00, 0.35, 0.85) * rim  * 0.30;   // soft inner glow
 
-        // Vignette
-        float vig = 0.85 - 0.45 * dot(p,p);
-        col *= clamp(vig, 0.25, 1.0);
+        // softer vignette
+        float vig = 0.92 - 0.42 * dot(p,p);
+        col *= clamp(vig, 0.35, 1.0);
 
         gl_FragColor = vec4(col, 1.0);
     }
