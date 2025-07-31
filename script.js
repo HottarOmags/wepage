@@ -153,6 +153,40 @@ function createProgram(gl, vertexShader, fragmentShader) {
     return program;
 }
 
+// Utility: rebuild effects array to match EFFECT_ORDER using effect.name
+function applyEffectOrder() {
+    if (!effects.length) return;
+    const byName = new Map(effects.map(e => [e.name || 'Unnamed', e]));
+    const ordered = [];
+    for (const name of EFFECT_ORDER) {
+        const eff = byName.get(name);
+        if (eff) ordered.push(eff);
+    }
+    // Add any remaining effects not listed in EFFECT_ORDER to the end
+    for (const e of effects) {
+        if (!ordered.includes(e)) ordered.push(e);
+    }
+    effects.length = 0;
+    for (const e of ordered) effects.push(e);
+}
+
+// Utility: rebuild effects array to match EFFECT_ORDER using effect.name
+function applyEffectOrder() {
+    if (!effects.length) return;
+    const byName = new Map(effects.map(e => [e.name || 'Unnamed', e]));
+    const ordered = [];
+    for (const name of EFFECT_ORDER) {
+        const eff = byName.get(name);
+        if (eff) ordered.push(eff);
+    }
+    // Add any remaining effects not listed in EFFECT_ORDER to the end
+    for (const e of effects) {
+        if (!ordered.includes(e)) ordered.push(e);
+    }
+    effects.length = 0;
+    for (const e of ordered) effects.push(e);
+}
+
 // --- Full-screen Quad (for pixel-based effects) ---
 const quadVS = `
     attribute vec2 a_position;
@@ -180,6 +214,27 @@ const effects = [];
 let startTime = performance.now();
 const effectDuration = 5000; // 5 seconds per effect
 
+// Centralized effect ordering by name. Reorder this array to change play order.
+const EFFECT_ORDER = [
+    'Starfield',
+    'Plasma',
+    'Sine Wave',
+    'Color Cycle',
+    'Boing Ball',
+    'Metaballs',
+    'RotoZoomer',
+    'Wave Distortion',
+    'Fire',
+    'Kaleidoscope Tunnel',
+    'RGB Split Glitch',
+    'Voronoi Flow',
+    'Tunnel'
+
+];
+
+// Centralized effect ordering by name. Reorder this array to change play order.
+/* removed duplicate EFFECT_ORDER declaration */
+
 function nextEffect() {
     if (!effects.length) {
         console.warn('No effects available to switch.');
@@ -192,7 +247,7 @@ function nextEffect() {
     }
     startTime = performance.now(); // Reset timer on manual switch
     updateEffectIndicator(); // Update the indicator
-    console.log('Switched to effect:', currentEffectIndex);
+    console.log('Switched to effect:', currentEffectIndex, eff && eff.name);
 }
 
 // --- Effect 1: Starfield ---
@@ -269,6 +324,7 @@ starfield.draw = (time) => {
 
     gl.drawArrays(gl.POINTS, 0, starfield.numStars);
 };
+starfield.name = 'Starfield';
 effects.push(starfield);
 
 // --- Effect 2: Plasma ---
@@ -324,6 +380,7 @@ plasma.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+plasma.name = 'Plasma';
 effects.push(plasma);
 
 // --- Effect 3: Sine Wave ---
@@ -440,6 +497,7 @@ sineWave.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+sineWave.name = 'Sine Wave';
 effects.push(sineWave);
 
 // --- Effect 4: Color Cycle (Simple Gradient Shift) ---
@@ -485,6 +543,7 @@ colorCycle.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+colorCycle.name = 'Color Cycle';
 effects.push(colorCycle);
 
 // --- Effect 5: Tunnel Effect ---
@@ -537,6 +596,7 @@ tunnel.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+tunnel.name = 'Tunnel';
 effects.push(tunnel);
 
 // --- Effect 7: Metaballs ---
@@ -627,6 +687,7 @@ metaballs.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+metaballs.name = 'Metaballs';
 effects.push(metaballs);
 
 // --- Effect 9: RotoZoomer ---
@@ -682,6 +743,7 @@ rotoZoomer.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+rotoZoomer.name = 'RotoZoomer';
 effects.push(rotoZoomer);
 
 // --- Effect 12: Wave Distortion ---
@@ -798,7 +860,266 @@ waveDistortion.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+waveDistortion.name = 'Wave Distortion';
 effects.push(waveDistortion);
+
+// --- Effect 13: Kaleidoscope Tunnel ---
+const kaleidoscope = {};
+kaleidoscope.vsSource = quadVS;
+kaleidoscope.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    vec3 palette(float t){
+        vec3 a = vec3(0.5,0.5,0.5);
+        vec3 b = vec3(0.5,0.5,0.5);
+        vec3 c = vec3(1.0,1.0,1.0);
+        vec3 d = vec3(0.00,0.33,0.67);
+        return a + b * cos(6.28318 * (c * (t + d)));
+    }
+
+    void main(){
+        vec2 uv = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
+        uv.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time * 0.6;
+
+        // Polar coords
+        float r = length(uv);
+        float a = atan(uv.y, uv.x);
+
+        // Mirror into kaleidoscope sectors
+        float sectors = 8.0;
+        float sectorAngle = 6.2831853 / sectors;
+        a = mod(a, sectorAngle);
+        a = abs(a - sectorAngle * 0.5);
+
+        // Tunnel mapping with swirl
+        float z = 1.0 / max(0.001, r);
+        float swirl = a + t * 0.8 + 0.35 * sin(z * 0.8 - t * 1.3);
+
+        // Pattern in tunnel space
+        float bands = sin(z * 2.2 + swirl * 6.0 - t * 2.0)
+                    + 0.5 * sin(z * 4.0 - swirl * 5.0 + t * 1.4);
+
+        float m = bands * 0.5 + 0.5;
+
+        // Colorize
+        vec3 col = palette(m);
+        // Neon accents on band edges
+        float edge = smoothstep(0.75, 0.98, m);
+        col += vec3(0.2, 0.8, 1.0) * edge * 0.5;
+
+        // Vignette
+        col *= 0.25 + 0.85 * pow(1.0 - clamp(r, 0.0, 1.0), 1.2);
+
+        gl_FragColor = vec4(col,1.0);
+    }
+`;
+kaleidoscope.init = () => {
+    kaleidoscope.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, kaleidoscope.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, kaleidoscope.fsSource)
+    );
+    gl.useProgram(kaleidoscope.program);
+    kaleidoscope.positionAttributeLocation = gl.getAttribLocation(kaleidoscope.program, 'a_position');
+    kaleidoscope.resolutionUniformLocation = gl.getUniformLocation(kaleidoscope.program, 'u_resolution');
+    kaleidoscope.timeUniformLocation = gl.getUniformLocation(kaleidoscope.program, 'u_time');
+};
+kaleidoscope.draw = (time) => {
+    gl.useProgram(kaleidoscope.program);
+    gl.uniform2f(kaleidoscope.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(kaleidoscope.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(kaleidoscope.positionAttributeLocation);
+    gl.vertexAttribPointer(kaleidoscope.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+kaleidoscope.name = 'Kaleidoscope Tunnel';
+effects.push(kaleidoscope);
+
+// --- Effect 14: RGB Split Glitch ---
+const rgbGlitch = {};
+rgbGlitch.vsSource = quadVS;
+rgbGlitch.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Fake background pattern to glitch
+    vec3 basePattern(vec2 uv, float t){
+        float a = sin(uv.x * 8.0 + t * 0.7) * 0.5 + 0.5;
+        float b = sin(uv.y * 10.0 - t * 1.1) * 0.5 + 0.5;
+        float c = sin((uv.x + uv.y) * 6.0 + t * 0.9) * 0.5 + 0.5;
+        return vec3(a, b, c);
+    }
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        float t = u_time;
+
+        // Blocky glitch mask
+        vec2 grid = floor(uv * vec2(48.0, 28.0));
+        float g = step(0.85, hash(grid + floor(t * 2.0)));
+
+        // Horizontal scan jumps
+        float jump = step(0.97, fract(sin((uv.y + t * 0.25) * 12.3) * 43758.23));
+        float shift = (g * 0.02 + jump * 0.03) * sin(t * 10.0);
+
+        // Chromatic offsets
+        vec2 offR = vec2( shift, 0.0);
+        vec2 offG = vec2(-shift, 0.0);
+        vec2 offB = vec2( 0.0 , shift * 0.5);
+
+        vec3 r = basePattern(uv + offR, t);
+        vec3 gch = basePattern(uv + offG, t);
+        vec3 b = basePattern(uv + offB, t);
+
+        vec3 col = vec3(r.r, gch.g, b.b);
+
+        // Add noise speckles
+        float n = hash(gl_FragCoord.xy + floor(t * 60.0));
+        col += (n - 0.5) * 0.08;
+
+        // Slight vignette
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+        float vig = 1.0 - 0.25 * dot(p,p);
+        col *= clamp(vig, 0.3, 1.0);
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+`;
+rgbGlitch.init = () => {
+    rgbGlitch.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, rgbGlitch.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, rgbGlitch.fsSource)
+    );
+    gl.useProgram(rgbGlitch.program);
+    rgbGlitch.positionAttributeLocation = gl.getAttribLocation(rgbGlitch.program, 'a_position');
+    rgbGlitch.resolutionUniformLocation = gl.getUniformLocation(rgbGlitch.program, 'u_resolution');
+    rgbGlitch.timeUniformLocation = gl.getUniformLocation(rgbGlitch.program, 'u_time');
+};
+rgbGlitch.draw = (time) => {
+    gl.useProgram(rgbGlitch.program);
+    gl.uniform2f(rgbGlitch.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(rgbGlitch.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(rgbGlitch.positionAttributeLocation);
+    gl.vertexAttribPointer(rgbGlitch.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+rgbGlitch.name = 'RGB Split Glitch';
+effects.push(rgbGlitch);
+
+// --- Effect 15: Voronoi Flow ---
+const voronoiFlow = {};
+voronoiFlow.vsSource = quadVS;
+voronoiFlow.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+    vec2 hash2(vec2 p){
+        float n = hash(p);
+        return vec2(n, hash(p + n));
+    }
+
+    // 2D Voronoi distance and id
+    vec3 voronoi(vec2 p){
+        vec2 g = floor(p);
+        vec2 f = fract(p);
+        float md = 8.0;
+        vec2  mr = vec2(0.0);
+        vec2  mi = vec2(0.0);
+        for(int j=-1;j<=1;j++){
+            for(int i=-1;i<=1;i++){
+                vec2 o = vec2(float(i), float(j));
+                vec2 r = hash2(g + o) - 0.5;
+                vec2 rp = o + r + 0.5 - f;
+                float d = dot(rp, rp);
+                if(d < md){
+                    md = d;
+                    mr = rp;
+                    mi = g + o;
+                }
+            }
+        }
+        return vec3(sqrt(md), mr);
+    }
+
+    vec3 palette(float t){
+        vec3 a = vec3(0.45,0.40,0.55);
+        vec3 b = vec3(0.55,0.45,0.60);
+        vec3 c = vec3(1.0,1.0,1.0);
+        vec3 d = vec3(0.00,0.33,0.67);
+        return a + b * cos(6.28318 * (c*(t + d)));
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time * 0.5;
+
+        // Domain warp for flow
+        vec2 q = p;
+        q += 0.35 * vec2(
+            sin(p.y * 2.7 + t * 1.2),
+            cos(p.x * 2.9 - t * 1.1)
+        );
+
+        // Animate cell positions by shifting space
+        vec3 v = voronoi(q * 3.0 + t);
+
+        float d = v.x;         // distance to cell center
+        vec2  dir = v.yz;      // direction to center
+
+        // Edge highlight (cell borders)
+        float edge = smoothstep(0.02, 0.0, abs(d - 0.25));
+        float rim  = smoothstep(0.12, 0.0, d);
+
+        // Flow brightness using direction and time
+        float flow = 0.5 + 0.5 * sin(dot(dir, vec2(3.1,2.7)) * 4.0 + t * 3.0);
+
+        vec3 col = palette(flow);
+        col += vec3(0.2, 0.9, 1.0) * edge * 0.7;
+        col += vec3(1.0, 0.3, 0.8) * rim * 0.25;
+
+        // Vignette
+        float vig = 0.85 - 0.45 * dot(p,p);
+        col *= clamp(vig, 0.25, 1.0);
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+`;
+voronoiFlow.init = () => {
+    voronoiFlow.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, voronoiFlow.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, voronoiFlow.fsSource)
+    );
+    gl.useProgram(voronoiFlow.program);
+    voronoiFlow.positionAttributeLocation = gl.getAttribLocation(voronoiFlow.program, 'a_position');
+    voronoiFlow.resolutionUniformLocation = gl.getUniformLocation(voronoiFlow.program, 'u_resolution');
+    voronoiFlow.timeUniformLocation = gl.getUniformLocation(voronoiFlow.program, 'u_time');
+};
+voronoiFlow.draw = (time) => {
+    gl.useProgram(voronoiFlow.program);
+    gl.uniform2f(voronoiFlow.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(voronoiFlow.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(voronoiFlow.positionAttributeLocation);
+    gl.vertexAttribPointer(voronoiFlow.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+voronoiFlow.name = 'Voronoi Flow';
+effects.push(voronoiFlow);
 
 // --- Effect 8: Fire Flames (Amiga Demoscene Style) ---
 const fire = {};
@@ -898,6 +1219,7 @@ fire.draw = (time) => {
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 };
+fire.name = 'Fire';
 effects.push(fire);
 
 // --- Amiga Boing Ball Effect (WebGL) ---
@@ -1235,6 +1557,7 @@ boingBall.draw = (tms) => {
     gl.drawElements(gl.TRIANGLES, boingBall.sphere.indices.length, gl.UNSIGNED_SHORT, 0);
 };
 
+boingBall.name = 'Boing Ball';
 effects.push(boingBall);
 
 // --- Main Animation Loop ---
@@ -1306,10 +1629,7 @@ document.body.appendChild(effectIndicator);
 
 // Update effect indicator
 function updateEffectIndicator() {
-    // Derive names defensively from availability/order
-    const fallbackNames = ['Starfield','Plasma','Sine Wave','Color Cycle','Tunnel','Metaballs','RotoZoomer','Wave Distortion','Fire','Boing Ball'];
-    const names = effects.map((_, i) => fallbackNames[i] ?? `Effect ${i+1}`);
-    const name = names[currentEffectIndex] ?? `Effect ${currentEffectIndex + 1}`;
+    const name = (effects[currentEffectIndex] && effects[currentEffectIndex].name) ? effects[currentEffectIndex].name : `Effect ${currentEffectIndex + 1}`;
     effectIndicator.textContent = `Effect: ${name} (${currentEffectIndex + 1}/${effects.length || 0})`;
 }
 
@@ -1318,6 +1638,11 @@ if (!gl) {
     // If WebGL is not available, avoid attaching the loop and clicks
     effectIndicator.textContent = 'WebGL not supported';
 } else {
+    // Apply centralized ordering before starting
+    applyEffectOrder();
+    // Start from beginning of the ordered list
+    currentEffectIndex = 0;
+
     if (effects.length) {
         // Ensure we start with a valid effect
         const eff0 = effects[currentEffectIndex];
