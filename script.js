@@ -10,6 +10,10 @@ if (!gl) {
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 
+// Debug toggle and FPS tracking
+const DEBUG_INFO = true; // set to true/false to show/hide on-screen effect info
+let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
+
 // --- Minimal Matrix Helpers (mat4/mat3) for Boing Ball ---
 function createMat4() {
     return [1,0,0,0,
@@ -170,22 +174,7 @@ function applyEffectOrder() {
     for (const e of ordered) effects.push(e);
 }
 
-// Utility: rebuild effects array to match EFFECT_ORDER using effect.name
-function applyEffectOrder() {
-    if (!effects.length) return;
-    const byName = new Map(effects.map(e => [e.name || 'Unnamed', e]));
-    const ordered = [];
-    for (const name of EFFECT_ORDER) {
-        const eff = byName.get(name);
-        if (eff) ordered.push(eff);
-    }
-    // Add any remaining effects not listed in EFFECT_ORDER to the end
-    for (const e of effects) {
-        if (!ordered.includes(e)) ordered.push(e);
-    }
-    effects.length = 0;
-    for (const e of ordered) effects.push(e);
-}
+// (removed duplicate applyEffectOrder)
 
 // --- Full-screen Quad (for pixel-based effects) ---
 const quadVS = `
@@ -217,18 +206,19 @@ const effectDuration = 5000; // 5 seconds per effect
 // Centralized effect ordering by name. Reorder this array to change play order.
 const EFFECT_ORDER = [
     'Starfield',
+    'Water',
     'Plasma',
     'Sine Wave',
-    'Color Cycle',
-    'Flame 2025',
+    'Tunnel',
     'Boing Ball',
     'Shadebobs',
+    'Flame 2025',
+    'Color Cycle',
     'Metaballs',
     'RotoZoomer',
     'Wave Distortion',
     'Kaleidoscope Tunnel',
-    'Voronoi Flow',
-    'Tunnel'
+    'Voronoi Flow'
 ];
 
 // Centralized effect ordering by name. Reorder this array to change play order.
@@ -544,6 +534,115 @@ colorCycle.draw = (time) => {
 };
 colorCycle.name = 'Color Cycle';
 effects.push(colorCycle);
+
+// --- Effect: Water (Modern waves + ripples) ---
+const water = {};
+water.vsSource = quadVS;
+water.fsSource = `
+   precision highp float;
+   uniform vec2 u_resolution;
+   uniform float u_time;
+
+   float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+   float noise(vec2 p){
+       vec2 i = floor(p);
+       vec2 f = fract(p);
+       f = f*f*(3.0-2.0*f);
+       float a = hash(i);
+       float b = hash(i + vec2(1.0,0.0));
+       float c = hash(i + vec2(0.0,1.0));
+       float d = hash(i + vec2(1.0,1.0));
+       return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+   }
+   float fbm(vec2 p){
+       float v=0.0, a=0.5;
+       mat2 m = mat2(1.6,1.2,-1.2,1.6);
+       for(int i=0;i<4;i++){
+           v += a*noise(p);
+           p = m*p;
+           a *= 0.5;
+       }
+       return v;
+   }
+
+   float wave(vec2 p, vec2 dir, float freq, float amp, float speed, float t){
+       float phase = dot(p, normalize(dir)) * freq + t*speed;
+       return amp * sin(phase);
+   }
+
+   float heightAt(vec2 p, float t){
+       float h = 0.0;
+       h += wave(p, vec2(1.0, 0.2), 5.5, 0.06, 1.2, t);
+       h += wave(p, vec2(-0.7, 0.9), 7.0, 0.045, 1.6, t);
+       h += wave(p, vec2(0.3, -1.0), 9.5, 0.03, 2.0, t);
+       h += wave(p, vec2(1.0, 1.0), 13.0, 0.015, 2.7, t);
+       float r = length(p);
+       h += 0.012 * sin(60.0*r - t*6.0);
+       float sh = fbm(p*3.0 + vec2(t*0.15, -t*0.12));
+       h += 0.01*(sh - 0.5);
+       return h;
+   }
+
+   void main(){
+       vec2 uv = gl_FragCoord.xy / u_resolution;
+       vec2 p = uv*2.0 - 1.0;
+       p.x *= u_resolution.x / u_resolution.y;
+
+       float t = u_time;
+
+       float h = heightAt(p, t);
+
+       float e = 0.002;
+       float hx = (heightAt(p + vec2(e,0.0), t) - h)/e;
+       float hy = (heightAt(p + vec2(0.0,e), t) - h)/e;
+
+       vec3 N = normalize(vec3(-hx, -hy, 1.0));
+       vec3 L = normalize(vec3(0.2, 0.4, 0.9));
+       vec3 V = normalize(vec3(0.0, 0.0, 1.0));
+       vec3 H = normalize(L + V);
+
+       float diff = max(dot(N, L), 0.0);
+       float spec = pow(max(dot(N, H), 0.0), 64.0) * 0.6;
+
+       vec3 deep = vec3(0.02, 0.22, 0.36);
+       vec3 shallow = vec3(0.05, 0.55, 0.75);
+       float depthMix = clamp(0.5 + h*6.0, 0.0, 1.0);
+       vec3 baseCol = mix(deep, shallow, depthMix);
+
+       float bands = 0.5 + 0.5*sin(10.0*h - t*2.0);
+       vec3 caustic = mix(vec3(0.0), vec3(0.1, 0.5, 0.9), smoothstep(0.6, 0.95, bands));
+
+       vec3 color = baseCol * (0.25 + 0.85*diff) + spec + caustic*0.6;
+
+       float vig = 0.96 - 0.35*dot(p,p);
+       color *= clamp(vig, 0.3, 1.0);
+       float scan = 0.02 * sin(gl_FragCoord.y*3.14159 + t*3.0);
+       color += vec3(scan)*0.02;
+
+       gl_FragColor = vec4(max(color, 0.0), 1.0);
+   }
+`;
+water.init = () => {
+   water.program = createProgram(gl,
+       createShader(gl, gl.VERTEX_SHADER, water.vsSource),
+       createShader(gl, gl.FRAGMENT_SHADER, water.fsSource)
+   );
+   gl.useProgram(water.program);
+   water.positionAttributeLocation = gl.getAttribLocation(water.program, 'a_position');
+   water.resolutionUniformLocation = gl.getUniformLocation(water.program, 'u_resolution');
+   water.timeUniformLocation = gl.getUniformLocation(water.program, 'u_time');
+};
+water.draw = (time) => {
+   gl.useProgram(water.program);
+   gl.uniform2f(water.resolutionUniformLocation, canvas.width, canvas.height);
+   gl.uniform1f(water.timeUniformLocation, time / 1000.0);
+   gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+   gl.enableVertexAttribArray(water.positionAttributeLocation);
+   gl.vertexAttribPointer(water.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+   gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+water.name = 'Water';
+effects.push(water);
 
 // --- Effect 5: Tunnel Effect ---
 const tunnel = {};
@@ -1812,7 +1911,20 @@ function animateEffects(currentTime) {
 
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // FPS update
+    const now = currentTime;
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+    fpsFrames++;
+    fpsAccumTime += dt;
+    if (fpsAccumTime >= 500) {
+        fps = 1000.0 * fpsFrames / fpsAccumTime;
+        fpsFrames = 0;
+        fpsAccumTime = 0;
+        updateEffectIndicator();
+    }
 
     const elapsed = currentTime - startTime;
     if (elapsed > effectDuration) {
@@ -1875,8 +1987,14 @@ document.body.appendChild(effectIndicator);
 
 // Update effect indicator
 function updateEffectIndicator() {
+    if (!DEBUG_INFO) {
+        effectIndicator.style.display = 'none';
+        return;
+    }
+    effectIndicator.style.display = 'block';
     const name = (effects[currentEffectIndex] && effects[currentEffectIndex].name) ? effects[currentEffectIndex].name : `Effect ${currentEffectIndex + 1}`;
-    effectIndicator.textContent = `Effect: ${name} (${currentEffectIndex + 1}/${effects.length || 0})`;
+    const res = `${canvas.width}x${canvas.height}`;
+    effectIndicator.textContent = `Effect: ${name} (${currentEffectIndex + 1}/${effects.length || 0})  |  FPS: ${fps.toFixed(0)}  |  ${res}`;
 }
 
 // Initial setup for the first effect
