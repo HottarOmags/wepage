@@ -61,6 +61,12 @@ const effects = [];
 let startTime = performance.now();
 const effectDuration = 5000; // 5 seconds per effect
 
+function nextEffect() {
+    currentEffectIndex = (currentEffectIndex + 1) % effects.length;
+    effects[currentEffectIndex].init(); // Re-initialize the new effect
+    startTime = performance.now(); // Reset timer on manual switch
+}
+
 // --- Effect 1: Starfield ---
 const starfield = {};
 starfield.vsSource = `
@@ -338,71 +344,7 @@ tunnel.draw = (time) => {
 };
 effects.push(tunnel);
 
-// --- Effect 6: Fire Effect ---
-const fire = {};
-fire.vsSource = quadVS;
-fire.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
 
-    // Simple pseudo-random number generator
-    float rand(vec2 co) {
-        return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
-    }
-
-    void main() {
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-        float y = uv.y;
-        float x = uv.x;
-
-        // Base fire noise
-        float noise = rand(vec2(x * 10.0, y * 20.0 - u_time * 5.0));
-        noise += rand(vec2(x * 20.0, y * 40.0 - u_time * 10.0)) * 0.5;
-        noise += rand(vec2(x * 40.0, y * 80.0 - u_time * 20.0)) * 0.25;
-        noise = noise / (1.0 + 0.5 + 0.25); // Normalize
-
-        // Apply a vertical gradient to simulate fire rising
-        float fire_intensity = pow(y, 2.0) * 2.0; // More intense at the bottom
-        fire_intensity *= (1.0 - noise * 0.5); // Add some randomness
-
-        vec3 color = vec3(0.0);
-        if (fire_intensity > 0.7) {
-            color = mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), (fire_intensity - 0.7) / 0.3); // Red to Yellow
-        } else if (fire_intensity > 0.4) {
-            color = mix(vec3(0.5, 0.0, 0.0), vec3(1.0, 0.0, 0.0), (fire_intensity - 0.4) / 0.3); // Dark Red to Red
-        } else {
-            color = mix(vec3(0.0, 0.0, 0.0), vec3(0.5, 0.0, 0.0), fire_intensity / 0.4); // Black to Dark Red
-        }
-
-        gl_FragColor = vec4(color, 1.0);
-    }
-`;
-
-fire.init = () => {
-    fire.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, fire.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, fire.fsSource)
-    );
-    gl.useProgram(fire.program);
-
-    fire.positionAttributeLocation = gl.getAttribLocation(fire.program, 'a_position');
-    fire.resolutionUniformLocation = gl.getUniformLocation(fire.program, 'u_resolution');
-    fire.timeUniformLocation = gl.getUniformLocation(fire.program, 'u_time');
-};
-
-fire.draw = (time) => {
-    gl.useProgram(fire.program);
-    gl.uniform2f(fire.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(fire.timeUniformLocation, time / 1000.0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(fire.positionAttributeLocation);
-    gl.vertexAttribPointer(fire.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-effects.push(fire);
 
 // --- Effect 7: Metaballs ---
 const metaballs = {};
@@ -492,176 +434,6 @@ metaballs.draw = (time) => {
 };
 effects.push(metaballs);
 
-// --- Effect 8: Mandelbrot Zoom (re-using high-precision shader) ---
-const mandelbrot = {};
-mandelbrot.vsSource = quadVS;
-mandelbrot.fsSource = `
-    precision highp float;
-
-    uniform vec2 u_resolution;
-    uniform float u_zoom;
-    uniform vec2 u_pan;
-    uniform int u_maxIterations;
-
-    // High precision arithmetic functions
-    vec2 add(vec2 a, vec2 b) {
-        float s = a.x + b.x;
-        float e = a.x - s + b.x + a.y + b.y;
-        return vec2(s, e);
-    }
-
-    vec2 sub(vec2 a, vec2 b) {
-        float s = a.x - b.x;
-        float e = a.x - s - b.x + a.y - b.y;
-        return vec2(s, e);
-    }
-
-    vec2 mul(vec2 a, vec2 b) {
-        float p = a.x * b.x;
-        float e = a.x * b.y + a.y * b.x + a.y * b.y;
-        return vec2(p, e);
-    }
-
-    vec2 square(vec2 a) {
-        float p = a.x * a.x;
-        float e = 2.0 * a.x * a.y + a.y * a.y;
-        return vec2(p, e);
-    }
-
-    vec2 fromFloat(float f) {
-        return vec2(f, 0.0);
-    }
-
-    vec3 hslToRgb(float h, float s, float l) {
-        vec3 rgb;
-        if (s == 0.0) {
-            rgb = vec3(l); // achromatic
-        } else {
-            float q = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
-            float p = 2.0 * l - q;
-            rgb.r = h + 1.0/3.0;
-            rgb.g = h;
-            rgb.b = h - 1.0/3.0;
-
-            vec3 tempRgb = rgb;
-            if (tempRgb.r < 0.0) tempRgb.r += 1.0;
-            if (tempRgb.g < 0.0) tempRgb.g += 1.0;
-            if (tempRgb.b < 0.0) tempRgb.b += 1.0;
-            if (tempRgb.r > 1.0) tempRgb.r -= 1.0;
-            if (tempRgb.g > 1.0) tempRgb.g -= 1.0;
-            if (tempRgb.b > 1.0) tempRgb.b -= 1.0;
-
-            if (tempRgb.r < 1.0/6.0) rgb.r = p + (q - p) * 6.0 * tempRgb.r;
-            else if (tempRgb.r < 1.0/2.0) rgb.r = q;
-            else if (tempRgb.r < 2.0/3.0) rgb.r = p + (q - p) * (2.0/3.0 - tempRgb.r) * 6.0;
-            else rgb.r = p;
-
-            if (tempRgb.g < 1.0/6.0) rgb.g = p + (q - p) * 6.0 * tempRgb.g;
-            else if (tempRgb.g < 1.0/2.0) rgb.g = q;
-            else if (tempRgb.g < 2.0/3.0) rgb.g = p + (q - p) * (2.0/3.0 - tempRgb.g) * 6.0;
-            else rgb.g = p;
-
-            if (tempRgb.b < 1.0/6.0) rgb.b = p + (q - p) * 6.0 * tempRgb.b;
-            else if (tempRgb.b < 1.0/2.0) rgb.b = q;
-            else if (tempRgb.b < 2.0/3.0) rgb.b = p + (q - p) * (2.0/3.0 - tempRgb.b) * 6.0;
-            else rgb.b = p;
-        }
-        return rgb;
-    }
-
-    void main() {
-        vec2 uv = gl_FragCoord.xy / u_resolution; // 0 to 1
-        uv = uv * 2.0 - 1.0; // -1 to 1
-
-        // Adjust for aspect ratio
-        if (u_resolution.x > u_resolution.y) {
-            uv.x *= u_resolution.x / u_resolution.y;
-        } else {
-            uv.y *= u_resolution.y / u_resolution.x;
-        }
-
-        // Apply zoom and pan using high precision
-        vec2 scale = fromFloat(2.0 / u_zoom);
-        vec2 c_re = add(mul(fromFloat(uv.x), scale), fromFloat(u_pan.x));
-        vec2 c_im = add(mul(fromFloat(uv.y), scale), fromFloat(u_pan.y));
-
-        vec2 z_re = fromFloat(0.0);
-        vec2 z_im = fromFloat(0.0);
-
-        int n = 0;
-        for (int i = 0; i < 256; i++) { // Max iterations in shader loop
-            if (i == u_maxIterations) break;
-            vec2 z_re2 = square(z_re);
-            vec2 z_im2 = square(z_im);
-
-            if (add(z_re2, z_im2).x > 4.0) {
-                break;
-            }
-
-            z_im = add(mul(fromFloat(2.0), mul(z_re, z_im)), c_im);
-            z_re = add(sub(z_re2, z_im2), c_re);
-            n++;
-        }
-
-        vec3 color;
-        if (n == u_maxIterations) {
-            color = vec3(0.0, 0.0, 0.0); // Inside Mandelbrot set (black)
-        } else {
-            // Smooth coloring
-            float log_zn = log(add(square(z_re), square(z_im)).x) / 2.0;
-            float nu = log(log_zn / log(2.0)) / log(2.0);
-            float m = float(n) + 1.0 - nu;
-
-            float hue = mod(m * 0.1, 1.0); // Cycle through hues
-            float saturation = 1.0;
-            float lightness = 0.5;
-
-            color = hslToRgb(hue, saturation, lightness);
-        }
-
-        gl_FragColor = vec4(color, 1.0);
-    }
-`;
-
-mandelbrot.init = () => {
-    mandelbrot.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, mandelbrot.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, mandelbrot.fsSource)
-    );
-    gl.useProgram(mandelbrot.program);
-
-    mandelbrot.positionAttributeLocation = gl.getAttribLocation(mandelbrot.program, 'a_position');
-    mandelbrot.resolutionUniformLocation = gl.getUniformLocation(mandelbrot.program, 'u_resolution');
-    mandelbrot.zoomUniformLocation = gl.getUniformLocation(mandelbrot.program, 'u_zoom');
-    mandelbrot.panUniformLocation = gl.getUniformLocation(mandelbrot.program, 'u_pan');
-    mandelbrot.maxIterationsUniformLocation = gl.getUniformLocation(mandelbrot.program, 'u_maxIterations');
-
-    mandelbrot.zoom = 1.0;
-    mandelbrot.panX = 0.0;
-    mandelbrot.panY = 0.0;
-    mandelbrot.maxIterations = 256;
-    mandelbrot.zoomSpeed = 1.02;
-    mandelbrot.targetZoom = 1e10; // Zoom in for a while
-};
-
-mandelbrot.draw = (time) => {
-    gl.useProgram(mandelbrot.program);
-    gl.uniform2f(mandelbrot.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(mandelbrot.zoomUniformLocation, mandelbrot.zoom);
-    gl.uniform2f(mandelbrot.panUniformLocation, mandelbrot.panX, mandelbrot.panY);
-    gl.uniform1i(mandelbrot.maxIterationsUniformLocation, mandelbrot.maxIterations);
-
-    if (mandelbrot.zoom < mandelbrot.targetZoom) {
-        mandelbrot.zoom *= mandelbrot.zoomSpeed;
-    }
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(mandelbrot.positionAttributeLocation);
-    gl.vertexAttribPointer(mandelbrot.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-effects.push(mandelbrot);
 
 // --- Effect 9: RotoZoomer ---
 const rotoZoomer = {};
@@ -718,108 +490,9 @@ rotoZoomer.draw = (time) => {
 };
 effects.push(rotoZoomer);
 
-// --- Effect 10: Dot Tunnel ---
-const dotTunnel = {};
-dotTunnel.vsSource = quadVS;
-dotTunnel.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
 
-    void main() {
-        vec2 uv = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
-        uv.x *= u_resolution.x / u_resolution.y; // Aspect ratio correction
 
-        float angle = atan(uv.y, uv.x);
-        float radius = length(uv);
 
-        float speed = u_time * 0.5;
-        float x = radius * cos(angle + speed);
-        float y = radius * sin(angle + speed);
-
-        // Create a grid of dots
-        float dot_size = 0.05;
-        float grid_x = fract(x * 10.0);
-        float grid_y = fract(y * 10.0);
-
-        float dist_to_center = distance(vec2(grid_x, grid_y), vec2(0.5, 0.5));
-        float dot_alpha = smoothstep(dot_size, dot_size * 0.5, dist_to_center);
-
-        vec3 color = vec3(dot_alpha); // White dots
-
-        gl_FragColor = vec4(color, 1.0);
-    }
-`;
-
-dotTunnel.init = () => {
-    dotTunnel.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, dotTunnel.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, dotTunnel.fsSource)
-    );
-    gl.useProgram(dotTunnel.program);
-
-    dotTunnel.positionAttributeLocation = gl.getAttribLocation(dotTunnel.program, 'a_position');
-    dotTunnel.resolutionUniformLocation = gl.getUniformLocation(dotTunnel.program, 'u_resolution');
-    dotTunnel.timeUniformLocation = gl.getUniformLocation(dotTunnel.program, 'u_time');
-};
-
-dotTunnel.draw = (time) => {
-    gl.useProgram(dotTunnel.program);
-    gl.uniform2f(dotTunnel.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(dotTunnel.timeUniformLocation, time / 1000.0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(dotTunnel.positionAttributeLocation);
-    gl.vertexAttribPointer(dotTunnel.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-effects.push(dotTunnel);
-
-// --- Effect 11: Moire Pattern ---
-const moire = {};
-moire.vsSource = quadVS;
-moire.fsSource = `
-    precision highp float;
-    uniform vec2 u_resolution;
-    uniform float u_time;
-
-    void main() {
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-
-        float lines1 = sin((uv.x * 50.0 + u_time * 5.0) * 3.14159);
-        float lines2 = sin((uv.y * 50.0 + u_time * 5.0) * 3.14159);
-
-        float color = (lines1 + lines2) * 0.5;
-
-        gl_FragColor = vec4(vec3(color), 1.0);
-    }
-`;
-
-moire.init = () => {
-    moire.program = createProgram(gl,
-        createShader(gl, gl.VERTEX_SHADER, moire.vsSource),
-        createShader(gl, gl.FRAGMENT_SHADER, moire.fsSource)
-    );
-    gl.useProgram(moire.program);
-
-    moire.positionAttributeLocation = gl.getAttribLocation(moire.program, 'a_position');
-    moire.resolutionUniformLocation = gl.getUniformLocation(moire.program, 'u_resolution');
-    moire.timeUniformLocation = gl.getUniformLocation(moire.program, 'u_time');
-};
-
-moire.draw = (time) => {
-    gl.useProgram(moire.program);
-    gl.uniform2f(moire.resolutionUniformLocation, canvas.width, canvas.height);
-    gl.uniform1f(moire.timeUniformLocation, time / 1000.0);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-    gl.enableVertexAttribArray(moire.positionAttributeLocation);
-    gl.vertexAttribPointer(moire.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-};
-effects.push(moire);
 
 // --- Effect 12: Wave Distortion ---
 const waveDistortion = {};
@@ -892,6 +565,14 @@ window.addEventListener('resize', () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
     // No need to re-init effects on resize, just update uniforms in draw
+});
+
+// Event listeners for manual cycling
+window.addEventListener('click', nextEffect);
+window.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') {
+        nextEffect();
+    }
 });
 
 // Initial setup for the first effect

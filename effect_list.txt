@@ -1,0 +1,9 @@
+Effect List:
+0: Starfield
+1: Plasma
+2: Sine Wave
+3: Color Cycle
+4: Tunnel Effect
+5: Metaballs
+6: RotoZoomer
+7: Wave Distortion
