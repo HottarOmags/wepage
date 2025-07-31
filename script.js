@@ -14,6 +14,30 @@ canvas.height = window.innerHeight;
 const DEBUG_INFO = true; // set to true/false to show/hide on-screen effect info
 let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
+
+const EFFECT_ORDER = [
+    'Sine Wave',
+    'Starfield',
+    'Hyperspace Glyphs',
+    'Plasma',
+    'Boing Ball',
+    'Water',
+    'Tunnel',
+    'Shadebobs',
+    'Flame 2025',
+    'Color Cycle',
+    'Neon Smoke Portal',
+    'Metaballs',
+    'RotoZoomer',
+    'Wave Distortion',
+    'Kaleidoscope Tunnel',
+    'Ember Flock',
+    'Neon Parallax City',
+    'Voronoi Flow',
+    'Particle Vector Field',
+    'Hex Lattice Warp'
+];
+
 // --- Minimal Matrix Helpers (mat4/mat3) for Boing Ball ---
 function createMat4() {
     return [1,0,0,0,
@@ -203,30 +227,7 @@ const effects = [];
 let startTime = performance.now();
 const effectDuration = 7500; // in milliseconds
 
-// Centralized effect ordering by name. Reorder this array to change play order.
-const EFFECT_ORDER = [
-    'Sine Wave',
-    'Starfield',
-    'Hyperspace Glyphs',
-    'Plasma',
-    'Boing Ball',
-    'Water',
-    'Tunnel',
-    'Shadebobs',
-    'Flame 2025',
-    'Color Cycle',
-    'Neon Smoke Portal',
-    'Metaballs',
-    'RotoZoomer',
-    'Wave Distortion',
-    'Kaleidoscope Tunnel',
-    'Ember Flock',
-    'Voronoi Flow',
-    'Particle Vector Field',
-];
-
-// Centralized effect ordering by name. Reorder this array to change play order.
-/* removed duplicate EFFECT_ORDER declaration */
+// EFFECT_ORDER moved to top; keep only one declaration.
 
 function nextEffect() {
     if (!effects.length) {
@@ -1677,12 +1678,7 @@ particleVectorField.draw = (time) => {
 particleVectorField.name = 'Particle Vector Field';
 effects.push(particleVectorField);
 
-// Ensure it appears in the centralized order
-(function ensurePVFOrder(){
-    const name = 'Particle Vector Field';
-    if (!EFFECT_ORDER.includes(name)) EFFECT_ORDER.push(name);
-    applyEffectOrder();
-})();
+// Removed per-effect order mutation to avoid mid-registration reorders
 
 // --- Effect: Hex Lattice Warp (brand-new) ---
 const hexLatticeWarp = {};
@@ -1838,16 +1834,7 @@ hexLatticeWarp.draw = (time) => {
 hexLatticeWarp.name = 'Hex Lattice Warp';
 effects.push(hexLatticeWarp);
 
-// Ensure it appears in the centralized order (added near the end for contrast)
-(function ensureOrder(){
-    const toEnsure = ['Hex Lattice Warp','Neon Smoke Portal'];
-    for (const name of toEnsure) {
-        if (!EFFECT_ORDER.includes(name)) {
-            EFFECT_ORDER.push(name);
-        }
-    }
-    applyEffectOrder();
-})();
+// Removed per-effect order mutation to avoid mid-registration reorders
 
 // --- Effect: Ember Flock (brand-new warm ember swarm) ---
 const emberFlock = {};
@@ -2026,18 +2013,7 @@ emberFlock.draw = (time) => {
 emberFlock.name = 'Ember Flock';
 effects.push(emberFlock);
 
-// Ensure Ember Flock is first in the centralized order
-(function ensureEmberOrderFirst(){
-    const name = 'Ember Flock';
-    const idx = EFFECT_ORDER.indexOf(name);
-    if (idx === -1) {
-        EFFECT_ORDER.unshift(name);
-    } else if (idx > 0) {
-        EFFECT_ORDER.splice(idx, 1);
-        EFFECT_ORDER.unshift(name);
-    }
-    applyEffectOrder();
-})();
+// Removed IIFE that forced Ember Flock to index 0
 
 // --- Amiga Boing Ball Effect (WebGL) ---
 const boingBall = {};
@@ -2783,14 +2759,183 @@ hyperspaceGlyphs.draw = (time) => {
 hyperspaceGlyphs.name = 'Hyperspace Glyphs';
 effects.push(hyperspaceGlyphs);
 
-// Ensure new effect is present in play order
-(function ensureNewEffectOrder(){
-    const toEnsure = ['Hyperspace Glyphs'];
-    for (const name of toEnsure) {
-        if (!EFFECT_ORDER.includes(name)) EFFECT_ORDER.push(name);
+// --- Effect: Neon Parallax City (brand-new cyberpunk parallax background) ---
+const neonParallaxCity = {};
+neonParallaxCity.vsSource = quadVS;
+neonParallaxCity.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Helpers
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0 - 2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
     }
-    applyEffectOrder();
-})();
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<4;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+    mat2 rot(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    // Cyberpunk palette: cyan -> magenta -> violet -> electric blue
+    vec3 palette(float t){
+        t = clamp(t, 0.0, 1.0);
+        vec3 c1 = vec3(0.05, 0.95, 1.00);
+        vec3 c2 = vec3(0.95, 0.20, 1.00);
+        vec3 c3 = vec3(0.55, 0.20, 0.90);
+        vec3 c4 = vec3(0.15, 0.55, 1.00);
+        if (t < 0.33) {
+            float k = smoothstep(0.0, 0.33, t);
+            return mix(c1, c2, k);
+        } else if (t < 0.66) {
+            float k = smoothstep(0.33, 0.66, t);
+            return mix(c2, c3, k);
+        } else {
+            float k = smoothstep(0.66, 1.0, t);
+            return mix(c3, c4, k);
+        }
+    }
+
+    // Holographic billboard shard SDF (rotated rectangles)
+    float sdBox(vec2 p, vec2 b){
+        vec2 d = abs(p) - b;
+        return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+    }
+
+    // Draw neon grid lines
+    float neonGrid(vec2 p, float scale, float thickness){
+        vec2 gp = p * scale;
+        vec2 g = abs(fract(gp) - 0.5);
+        float line = min(g.x, g.y);
+        float d = smoothstep(thickness, thickness*0.5, line);
+        return d;
+    }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = (gl_FragCoord.xy / R);
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= R.x / R.y;
+
+        float t = u_time;
+
+        // Layer 1: Distant city glow (parallax slow)
+        vec2 l1 = p * 0.6 + vec2(0.05*sin(t*0.07), 0.03*cos(t*0.05));
+        float h1 = 0.5 + 0.5 * fbm(l1 * 1.5 + vec2(0.0, t*0.03));
+        vec3 col1 = palette(0.25 + 0.35 * h1);
+        col1 *= 0.25 + 0.75 * smoothstep(-1.0, 1.2, p.y + 0.15*sin(t*0.2)); // horizon emphasis
+
+        // Layer 2: Neon ground grid (medium parallax, perspective warp)
+        vec2 gp = p;
+        gp.y += 0.35;                     // move grid down
+        float persp = 1.5 / max(0.2, gp.y + 1.6); // fake perspective factor
+        vec2 gridUV = vec2(gp.x, gp.y) * vec2(persp*1.1, persp*0.4);
+        gridUV.x += t * 0.2;              // scroll forward
+        float gridLines = neonGrid(gridUV, 8.0, 0.06);
+        vec3 gridCol = mix(vec3(0.0), vec3(0.05, 0.9, 1.0), gridLines);
+        // add secondary magenta lines offset
+        float gridLines2 = neonGrid(gridUV + vec2(0.23, 0.17), 8.0, 0.06);
+        gridCol += vec3(0.9, 0.2, 1.0) * gridLines2 * 0.6;
+        // fade with distance and vignette
+        float gridFade = smoothstep(-0.2, 0.6, p.y) * (0.9 - 0.7*length(p*vec2(0.9,1.2)));
+        gridCol *= gridFade;
+
+        // Layer 3: Floating holographic billboards (faster parallax shards)
+        vec3 shardAccum = vec3(0.0);
+        float shardAlpha = 0.0;
+        vec2 bp = p * 1.4 + vec2(0.2*sin(t*0.41), -0.1*cos(t*0.33));
+        bp = rot(0.12*sin(t*0.2)) * bp;
+        // sample a small grid of shards, jittered
+        for(int j=-1;j<=1;j++){
+            for(int i=-1;i<=1;i++){
+                vec2 cell = vec2(float(i), float(j));
+                vec2 id = floor(bp*3.0) + cell;
+                vec2 rnd = vec2(hash(id), hash(id+37.2));
+                vec2 center = (floor(bp*3.0) + cell + 0.5 + (rnd-0.5)*0.35) / 3.0;
+                vec2 lp = bp - center;
+                float ang = 3.14159 * (rnd.x - 0.5) + 0.3*sin(t*0.7 + dot(id, vec2(0.7,1.3)));
+                lp = rot(ang) * lp;
+                float sx = mix(0.10, 0.35, rnd.x);
+                float sy = mix(0.04, 0.18, rnd.y);
+                float d = sdBox(lp, vec2(sx, sy));
+                float edge = 1.0 - smoothstep(0.005, 0.02, abs(d));
+                float glow = 1.0 - smoothstep(0.09, 0.35, abs(d));
+                float hue = fract(0.3 + 0.4*rnd.x + 0.3*sin(t*0.25 + rnd.y*6.0));
+                vec3 c = palette(hue);
+                vec3 sCol = c * (edge*1.2 + glow*0.6);
+                // depth fade based on screen y
+                float df = smoothstep(-0.8, 0.4, p.y);
+                sCol *= df;
+                float w = exp(-6.0*dot(lp, lp));
+                shardAccum += sCol * w;
+                shardAlpha += (edge + 0.5*glow) * w;
+            }
+        }
+        shardAccum /= max(0.0001, shardAlpha);
+
+        // Layer 4: Volumetric fog bands (fast parallax)
+        vec2 fogP = p * 1.8 + vec2(0.35*t, -0.15*t);
+        float f1 = fbm(fogP*0.8);
+        float f2 = fbm(fogP*1.6 + vec2(3.1, -1.7));
+        float fog = smoothstep(0.55, 1.0, f1*0.6 + f2*0.5);
+        vec3 fogCol = mix(vec3(0.02,0.03,0.06), vec3(0.05, 0.55, 1.0), 0.6) * fog * 0.35;
+
+        // Compose layers
+        vec3 col = vec3(0.01, 0.02, 0.04);
+        col = mix(col, col1, 0.85);
+        col += gridCol;
+        col = mix(col, shardAccum, 0.55);
+        col += fogCol;
+
+        // Scanlines and vignette
+        float scan = 0.016 * sin(gl_FragCoord.y * 3.14159 + t * 3.2);
+        col += vec3(scan) * 0.012;
+        float vig = 0.92 - 0.55*dot(p, p);
+        col *= clamp(vig, 0.25, 1.0);
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+neonParallaxCity.init = () => {
+    neonParallaxCity.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, neonParallaxCity.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, neonParallaxCity.fsSource)
+    );
+    gl.useProgram(neonParallaxCity.program);
+    neonParallaxCity.positionAttributeLocation = gl.getAttribLocation(neonParallaxCity.program, 'a_position');
+    neonParallaxCity.resolutionUniformLocation = gl.getUniformLocation(neonParallaxCity.program, 'u_resolution');
+    neonParallaxCity.timeUniformLocation = gl.getUniformLocation(neonParallaxCity.program, 'u_time');
+};
+neonParallaxCity.draw = (time) => {
+    gl.useProgram(neonParallaxCity.program);
+    gl.uniform2f(neonParallaxCity.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(neonParallaxCity.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(neonParallaxCity.positionAttributeLocation);
+    gl.vertexAttribPointer(neonParallaxCity.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+neonParallaxCity.name = 'Neon Parallax City';
+effects.push(neonParallaxCity);
+
+// Removed per-effect insertion; centralized array defines order
+
+// Removed per-effect ensure; centralized array already lists all
 // --- Main Animation Loop ---
 function animateEffects(currentTime) {
     requestAnimationFrame(animateEffects);
