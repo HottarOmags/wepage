@@ -218,7 +218,8 @@ const EFFECT_ORDER = [
     'RotoZoomer',
     'Wave Distortion',
     'Kaleidoscope Tunnel',
-    'Voronoi Flow'
+    'Voronoi Flow',
+    'Neon Smoke Portal'
 ];
 
 // Centralized effect ordering by name. Reorder this array to change play order.
@@ -1815,9 +1816,11 @@ effects.push(hexLatticeWarp);
 
 // Ensure it appears in the centralized order (added near the end for contrast)
 (function ensureOrder(){
-    const name = 'Hex Lattice Warp';
-    if (!EFFECT_ORDER.includes(name)) {
-        EFFECT_ORDER.push(name);
+    const toEnsure = ['Hex Lattice Warp','Neon Smoke Portal'];
+    for (const name of toEnsure) {
+        if (!EFFECT_ORDER.includes(name)) {
+            EFFECT_ORDER.push(name);
+        }
     }
     applyEffectOrder();
 })();
@@ -2159,6 +2162,194 @@ boingBall.draw = (tms) => {
 
 boingBall.name = 'Boing Ball';
 effects.push(boingBall);
+
+// --- Effect: Neon Smoke Portal (brand-new raymarch) ---
+const neonSmokePortal = {};
+neonSmokePortal.vsSource = quadVS;
+neonSmokePortal.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Hash/Noise
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm2(vec2 p){
+        // cheaper fbm: 3 octaves
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<3;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Signed distance: Torus
+    float sdTorus(vec3 p, vec2 t){
+        vec2 q = vec2(length(p.xz) - t.x, p.y);
+        return length(q) - t.y;
+    }
+
+    // Simple 2D rotators
+    mat2 rot2(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    // Palette (neon)
+    vec3 palette(float h){
+        vec3 a = vec3(0.05,0.90,0.95); // cyan
+        vec3 b = vec3(0.95,0.20,0.95); // magenta
+        vec3 c = vec3(1.00,0.75,0.20); // amber
+        return mix(mix(a,b,smoothstep(0.0,0.6,h)), c, smoothstep(0.6,1.0,h));
+    }
+
+    // Scene distance: torus with domain warp for smoky edges
+    float map(vec3 p, float t, out float edgeMask){
+        // 3-axis rotation
+        float ay = 0.4*sin(t*0.40) + 0.9*sin(t*0.17);
+        float ax = 0.6*sin(t*0.33) + 0.4*sin(t*0.21);
+        float az = 0.5*sin(t*0.27) - 0.6*sin(t*0.13);
+        // apply in sequence: Y, X, Z
+        p.xz = rot2(ay) * p.xz;  // around Y
+        p.yz = rot2(ax) * p.yz;  // around X
+        p.xy = rot2(az) * p.xy;  // around Z
+
+        // Domain noise warp (cheaper & reused)
+        float w1 = fbm2(p.xy*0.7 + t*0.15);
+        float w2 = fbm2(p.zy*0.8 - t*0.11);
+        float w = w1 + w2;
+        p += 0.28 * (w - 1.0) * normalize(vec3(p.x, p.y*0.4, p.z) + 0.0001);
+
+        float d = sdTorus(p, vec2(1.25, 0.28));
+
+        // Edge mask for neon accent
+        edgeMask = smoothstep(0.35, 0.0, abs(d));
+        return d;
+    }
+
+    // Raymarch
+    vec4 raymarch(vec3 ro, vec3 rd, float t){
+        // jitter start to reduce banding, allows fewer steps
+        float seed = dot(gl_FragCoord.xy, vec2(0.13,0.71));
+        float jitter = fract(sin(seed)*43758.5453);
+        float total = jitter * 0.06;
+
+        vec3 col = vec3(0.0);
+        float accGlow = 0.0;
+
+        // Coarse hue base and parameters
+        float hueBase = 0.5 + 0.5*sin(t*0.45);
+        float maxDist = 6.0;
+
+        // Fewer steps + stronger adaptive stepping
+        for(int i=0;i<44;i++){
+            vec3 pos = ro + rd * total;
+            float edgeMask;
+            float d = map(pos, t, edgeMask);
+
+            // Density from SDF
+            float dens = exp(-6.5*abs(d));
+            // cheaper modulation
+            float n = fbm2(pos.xz*0.75 + t*0.42);
+            dens *= 0.6 + 0.4*sin(4.7*n + t*1.8);
+
+            // Color
+            float hue = clamp(hueBase + 0.3*sin(0.55*pos.x + 0.85*pos.y + 0.65*pos.z), 0.0, 1.0);
+            vec3 c = palette(hue);
+            c += vec3(0.2, 0.8, 1.0) * (edgeMask*edgeMask) * 0.5;
+
+            // Accumulate
+            float stepLen = 0.055;
+            float contrib = dens * stepLen * (0.6 + 0.4*edgeMask);
+            col += c * contrib;
+            accGlow += contrib * 0.85;
+
+            // Early outs
+            if(accGlow > 0.80) break;
+
+            // Adaptive step: larger as we go, and when away from surface
+            float adv = max(0.035, min(0.20, abs(d)*0.75 + total*0.03));
+            total += adv;
+            if(total > maxDist) break;
+        }
+
+        vec3 bg = vec3(0.01, 0.02, 0.04);
+        vec3 finalCol = mix(bg, col, clamp(accGlow*1.25, 0.0, 1.0));
+        finalCol += vec3(accGlow*0.5); // bloom-ish reduced
+
+        return vec4(finalCol, 1.0);
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time * 0.9;
+
+        // Camera swirl
+        float camR = 3.5;
+        float ca = 0.6 * sin(t*0.33);
+        vec3 ro = vec3(camR*cos(ca), 0.5 + 0.3*sin(t*0.2), camR*sin(ca));
+        vec3 ta = vec3(0.0, 0.0, 0.0);
+
+        // Build camera basis
+        vec3 ww = normalize(ta - ro);
+        vec3 uu = normalize(cross(vec3(0.0,1.0,0.0), ww));
+        vec3 vv = cross(ww, uu);
+
+        // Ray
+        float fov = 1.2;
+        vec3 rd = normalize(uu*p.x + vv*p.y + ww*fov);
+
+        vec4 col = raymarch(ro, rd, t);
+
+        // Film grain (cheap)
+        float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + t*37.2)*43758.5453);
+        col.rgb += (grain-0.5)*0.010;
+
+        // Vignette
+        float vig = 0.92 - 0.5*dot(p,p);
+        col.rgb *= clamp(vig, 0.25, 1.0);
+
+        // Subtle scanlines
+        float scan = 0.012 * sin(gl_FragCoord.y * 3.14159 + t * 3.1);
+        col.rgb += vec3(scan) * 0.012;
+
+        gl_FragColor = vec4(max(col.rgb, 0.0), 1.0);
+    }
+`;
+neonSmokePortal.init = () => {
+    neonSmokePortal.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, neonSmokePortal.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, neonSmokePortal.fsSource)
+    );
+    gl.useProgram(neonSmokePortal.program);
+    neonSmokePortal.positionAttributeLocation = gl.getAttribLocation(neonSmokePortal.program, 'a_position');
+    neonSmokePortal.resolutionUniformLocation = gl.getUniformLocation(neonSmokePortal.program, 'u_resolution');
+    neonSmokePortal.timeUniformLocation = gl.getUniformLocation(neonSmokePortal.program, 'u_time');
+};
+neonSmokePortal.draw = (time) => {
+    gl.useProgram(neonSmokePortal.program);
+    gl.uniform2f(neonSmokePortal.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(neonSmokePortal.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(neonSmokePortal.positionAttributeLocation);
+    gl.vertexAttribPointer(neonSmokePortal.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+neonSmokePortal.name = 'Neon Smoke Portal';
+effects.push(neonSmokePortal);
 
 // --- Main Animation Loop ---
 function animateEffects(currentTime) {
