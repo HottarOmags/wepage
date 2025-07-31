@@ -220,6 +220,7 @@ const EFFECT_ORDER = [
     'Plasma',
     'Sine Wave',
     'Color Cycle',
+    'Flame 2025',
     'Boing Ball',
     'Shadebobs',
     'Metaballs',
@@ -1156,7 +1157,162 @@ kaleidoscope.draw = (time) => {
 kaleidoscope.name = 'Kaleidoscope Tunnel';
 effects.push(kaleidoscope);
 
-// --- Effect 14: RGB Split Glitch ---
+// --- Effect 14: Flame 2025 (Modern Stylized Fire) ---
+const flame2025 = {};
+flame2025.vsSource = quadVS;
+flame2025.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    // Hash/Noise helpers (value noise + fbm)
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<5;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Blackbody-ish palette from deep red -> orange -> yellow -> white
+    vec3 firePalette(float t){
+        t = clamp(t, 0.0, 1.0);
+        float r = smoothstep(0.0, 0.25, t) + 0.65*t;
+        float g = smoothstep(0.15, 0.9, t);
+        float b = smoothstep(0.55, 1.0, t)*0.55;
+        vec3 col = vec3(r, g, b);
+        col = 1.0 - exp(-col*2.2);
+        return col;
+    }
+
+    // Signed distance to a rounded cone-like base used for emission source
+    float baseSource(vec2 p){
+        // Source from bottom center; widen with height
+        float y = p.y + 0.95; // lift base just below screen
+        float w = 0.18 + 0.55 * smoothstep(0.0, 1.2, y); // plume widens as it rises
+        float d = length(vec2(p.x / max(w, 0.001), max(y, 0.0)));
+        return exp(-3.5 * d*d);
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time;
+
+        // Upward advection and slight outward curl
+        float rise = t * 0.75;
+        // skew x by y to get outward drift from centerline as it rises
+        float outward = 0.35 * p.y;
+        vec2 flowP = vec2(p.x + outward, p.y + 0.35*fbm(vec2(p.x*1.3, p.y*2.5 + rise*1.2)));
+
+        // Domain warps (reduce symmetry by offsetting with time and random phases)
+        vec2 warp1 = vec2(
+            fbm(vec2(flowP.x*1.35 + 3.7, flowP.y*2.6 + rise*1.3)),
+            fbm(vec2(flowP.x*1.75 + 9.1, flowP.y*2.9 + rise*1.6))
+        );
+        vec2 warp2 = vec2(
+            fbm(vec2(flowP.x*3.1 + 17.0 + t*0.27, flowP.y*4.2 + rise*2.1)),
+            fbm(vec2(flowP.x*2.3 + 27.0 - t*0.19, flowP.y*3.6 + rise*1.8))
+        );
+
+        // Anisotropic heat shimmer: more vertical, weaker near base to avoid jitter
+        float baseMask = smoothstep(-0.9, -0.2, p.y); // 0 at base, 1 higher up
+        vec2 shimmer = 0.010 * baseMask * vec2(
+            0.6 * sin((p.y + t*1.4)*28.0 + 2.5*fbm(p*5.5 + t)),
+            1.0 * cos((p.x - t*1.1)*24.0 + 2.0*fbm(p*5.0 - t*0.7))
+        );
+
+        // Combine
+        vec2 q = flowP + shimmer + 0.16*(warp1 - 0.5) + 0.10*(warp2 - 0.5);
+
+        // Emission source from base, not centralizing
+        float source = baseSource(q);
+
+        // Upward density: more at base, thinning as it rises (monotonic with y)
+        float dens = smoothstep(-0.95, 0.35, q.y);
+
+        // Intensity via layered fbm with vertical advection
+        float f1 = fbm(vec2(q.x*2.2, q.y*4.2 + rise*2.2));
+        float f2 = fbm(vec2(q.x*1.1 + 4.0, q.y*2.0 + rise*1.5));
+        float tongues = 0.6*f1 + 0.4*f2;
+        // add small-scale turbulent flicker that advects upwards
+        float flicker = 0.20 * sin(12.0*q.y - t*7.0 + 6.2831*fbm(q*3.5 + t*0.4));
+        float intensity = clamp(tongues + flicker, 0.0, 1.0);
+        intensity = pow(intensity, 1.25);
+
+        // Temperature: base source + density-weighted intensity
+        float temp = 1.25*source + 1.05*dens*intensity;
+
+        // Core/mid/glow shaping; reduce overlap for less "vibration"
+        float core = smoothstep(0.62, 0.97, temp);
+        float mid  = smoothstep(0.34, 0.78, temp) * (1.0 - 0.55*core);
+        float glow = smoothstep(0.12, 0.42, temp) * (1.0 - 0.35*mid);
+
+        // Colorization
+        vec3 colCore = firePalette(0.88 + 0.12*temp);
+        vec3 colMid  = firePalette(0.58 + 0.34*temp);
+        vec3 colGlow = firePalette(0.32 + 0.28*temp);
+
+        // Compose emissive
+        vec3 col = vec3(0.0);
+        col += colGlow * glow * 0.70;
+        col += colMid  * mid  * 1.05;
+        col += colCore * core * 1.65;
+
+        // Subtle vertical-only haze to enhance upward motion
+        float haze = 0.018 * sin( q.y*140.0 - t*8.0 + 3.0*fbm(q*6.0 + t) );
+        col += vec3(haze);
+
+        // Vignette that favors vertical plume (less darkening at top center)
+        float vigX = 0.95 - 0.55*abs(p.x);
+        float vigY = 0.97 - 0.40*max(0.0, p.y);
+        col *= clamp(min(vigX, vigY), 0.18, 1.0);
+
+        // Gentle scanline
+        float scan = 0.020 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        col += vec3(scan) * 0.025;
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+flame2025.init = () => {
+    flame2025.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, flame2025.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, flame2025.fsSource)
+    );
+    gl.useProgram(flame2025.program);
+    flame2025.positionAttributeLocation = gl.getAttribLocation(flame2025.program, 'a_position');
+    flame2025.resolutionUniformLocation = gl.getUniformLocation(flame2025.program, 'u_resolution');
+    flame2025.timeUniformLocation = gl.getUniformLocation(flame2025.program, 'u_time');
+};
+flame2025.draw = (time) => {
+    gl.useProgram(flame2025.program);
+    gl.uniform2f(flame2025.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(flame2025.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(flame2025.positionAttributeLocation);
+    gl.vertexAttribPointer(flame2025.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+flame2025.name = 'Flame 2025';
+effects.push(flame2025);
 
 // --- Effect 15: Voronoi Flow ---
 const voronoiFlow = {};
