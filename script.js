@@ -334,18 +334,85 @@ sineWave.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
+    // Smooth minimum (polynomial) for blending multiple distances
+    float smin(float a, float b, float k) {
+        float h = clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
+        return mix(b, a, h) - k*h*(1.0 - h);
+    }
+
+    // Color palette helper
+    vec3 palette(float t) {
+        vec3 a = vec3(0.55, 0.45, 0.65);
+        vec3 b = vec3(0.45, 0.55, 0.45);
+        vec3 c = vec3(1.00, 1.00, 1.00);
+        vec3 d = vec3(0.10, 0.33, 0.67);
+        return a + b * cos(6.28318 * (c * (t + d)));
+    }
+
     void main() {
         vec2 uv = gl_FragCoord.xy / u_resolution;
-        float y_offset = sin(uv.x * 20.0 + u_time * 2.0) * 0.1; // Adjust amplitude and frequency
-        float thickness = 0.01; // Thickness of the wave line
 
-        float dist = abs(uv.y - (0.5 + y_offset)); // Distance from the wave center
-        
-        vec3 color = vec3(0.0); // Black background
-        if (dist < thickness) {
-            color = vec3(0.0, 1.0, 1.0); // Cyan wave
-        }
-        
+        // Centered space with aspect correction
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        float t = u_time;
+
+        // Subtle vertical parallax distortion for depth
+        float parallax = 0.04 * sin(p.y * 3.0 + t * 0.7);
+        p.x += parallax;
+
+        // Base wave parameters
+        float baseFreq = 6.0;
+        float speed    = 1.2;
+        float amp      = 0.28;
+
+        // Multi-harmonic y target (richer motion)
+        float w1 = sin(p.x * baseFreq + t * speed);
+        float w2 = 0.5 * sin(p.x * baseFreq * 0.5 - t * 0.9);
+        float w3 = 0.33 * sin(p.x * baseFreq * 1.7 + t * 1.7 + 1.2);
+
+        float yTarget = (w1 + w2 + w3) * amp * 0.5;
+
+        // Distance from the wave centerline
+        float d = abs(p.y - yTarget);
+
+        // Add a faint secondary wave offset for glow layering
+        float yTarget2 = (sin(p.x * (baseFreq * 1.12) + t * (speed * 0.85)) +
+                          0.5 * sin(p.x * (baseFreq * 0.56) - t * 1.1)) * amp * 0.35;
+        float d2 = abs(p.y - yTarget2);
+
+        // Blend distances for a smooth combined band
+        float k = 0.08; // blending softness
+        float dist = smin(d, d2, k);
+
+        // Core thickness and soft outer glow
+        float core   = 0.008;
+        float glow   = 0.12;
+
+        // Smooth alpha for core and glow
+        float aCore = 1.0 - smoothstep(core * 0.5, core, dist);
+        float aGlow = 1.0 - smoothstep(core, glow, dist);
+
+        // Time-based hue factor influenced by local phase for variation
+        float hueShift = 0.25 * sin(t * 0.4) + 0.25 * sin((p.x + p.y) * 1.2 + t * 0.6);
+        float phase = 0.5 + 0.5 * sin(p.x * baseFreq + t);
+        vec3 colCore = palette(phase + hueShift);
+        vec3 colGlow = palette(phase * 0.7 + 0.1 + 0.5 * hueShift);
+
+        // Keep glow a bit cyan-leaning
+        colGlow = mix(colGlow, vec3(0.0, 1.0, 1.0), 0.5);
+
+        // Compose on dark background with additive flavor
+        vec3 bg = vec3(0.0);
+        vec3 color = bg;
+        color += colGlow * aGlow * 0.55;
+        color += colCore * aCore * 1.0;
+
+        // Subtle scanline shimmer
+        float scan = 0.08 * sin(uv.y * u_resolution.y * 3.14159 + t * 3.0);
+        color += vec3(scan) * 0.03;
+
         gl_FragColor = vec4(color, 1.0);
     }
 `;
@@ -625,18 +692,86 @@ waveDistortion.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
-    void main() {
+    // Hash and noise helpers
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        for(int i=0;i<5;i++){
+            v += a * noise(p);
+            p *= 2.0;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    vec3 palette(float t){
+        vec3 a = vec3(0.50, 0.50, 0.55);
+        vec3 b = vec3(0.45, 0.35, 0.55);
+        vec3 c = vec3(1.00, 1.00, 1.00);
+        vec3 d = vec3(0.00, 0.33, 0.67);
+        return a + b * cos(6.28318 * (c * (t + d)));
+    }
+
+    void main(){
         vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= u_resolution.x / u_resolution.y;
 
-        float waveX = sin(uv.y * 20.0 + u_time * 3.0) * 0.05;
-        float waveY = cos(uv.x * 20.0 + u_time * 3.0) * 0.05;
+        float t = u_time * 0.7;
 
-        vec2 distortedUv = uv + vec2(waveX, waveY);
+        // Layered directional ripples
+        float r1 = sin(p.y * 10.0 + t * 2.2);
+        float r2 = sin((p.x * 8.0 - p.y * 6.0) + t * 1.3);
+        float r3 = cos((p.x * 14.0 + p.y * 12.0) - t * 1.9);
+        float ripple = (r1 * 0.55 + r2 * 0.30 + r3 * 0.15);
 
-        // Simple color based on distorted UV
-        vec3 color = vec3(distortedUv.x, distortedUv.y, 0.5);
+        // Flow field with fbm for organic distortion
+        vec2 flow = vec2(
+            fbm(p * 1.2 + vec2(t * 0.25, 0.0)),
+            fbm(p * 1.2 + vec2(0.0, t * 0.25))
+        );
 
-        gl_FragColor = vec4(color, 1.0);
+        // Combine distortions
+        float waveX = sin(p.y * 20.0 + t * 3.0 + flow.x * 4.0) * 0.04;
+        float waveY = cos(p.x * 22.0 - t * 2.6 + flow.y * 4.0) * 0.04;
+
+        // Add small high-frequency shimmer
+        float shimmer = 0.005 * sin((p.x + p.y) * 120.0 + t * 8.0);
+
+        vec2 distorted = p + vec2(waveX, waveY) + ripple * 0.03 + shimmer;
+
+        // Distance bands to form neon contours
+        float bands = sin(length(distorted) * 8.0 - t * 2.0);
+        float edges = smoothstep(0.2, 0.95, bands * 0.5 + 0.5);
+
+        // Color based on curved domain and time
+        float hue = 0.5 + 0.5 * sin(distorted.x * 1.4 + distorted.y * 1.2 + t * 0.6);
+        vec3 col = palette(hue);
+
+        // Add neon lines by accentuating edge regions
+        float neon = smoothstep(0.75, 0.99, edges);
+        vec3 neonCol = mix(vec3(0.0, 0.9, 1.0), vec3(0.8, 0.2, 1.0), hue);
+        col = mix(col, neonCol, neon * 0.9);
+
+        // Vignette and subtle scanlines for demoscene vibe
+        float vig = 0.9 - 0.6 * length(p);
+        col *= clamp(vig, 0.2, 1.0);
+
+        float scan = 0.03 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        col += vec3(scan) * 0.04;
+
+        gl_FragColor = vec4(col, 1.0);
     }
 `;
 
