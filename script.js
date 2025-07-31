@@ -826,17 +826,30 @@ metaballs.fsSource = `
             value += u_ballRadii[i] / dist;
         }
 
+        
         vec3 color = vec3(0.0);
-        if (value > 6.0) {
-            color = vec3(0.0, 0.2, 1.0); // Blue
-        } else if (value > 4.0) {
-            color = vec3(0.0, 0.4, 1.0); // Lighter Blue
-        } else if (value > 3.0) {
-            color = vec3(0.0, 0.7, 1.0); // Even Lighter Blue
-        } else if (value > 2.0 ) {
-            color = vec3(0.0, 1.0, 1.0); // Even Lighter Blue
+        if (value > 8.5) {
+            color = vec3(0.35, 0.22, 1.00); 
+        } else if (value > 7.0) {
+            color = vec3(0.2, 0.3, 1.00);
+        } else if (value > 6.0) {
+            color = vec3(0.00, 0.3, 1.00);
+        } else if (value > 5.2) {
+            color = vec3(0.00, 0.38, 1.00);
+        } else if (value > 4.5) {
+            color = vec3(0.00, 0.50, 1.00);
+        } else if (value > 3.9) {
+            color = vec3(0.00, 0.62, 1.00);
+        } else if (value > 3.3) {
+            color = vec3(0.00, 0.74, 1.00);
+        } else if (value > 2.8) {
+            color = vec3(0.00, 0.86, 1.00);
+        } else if (value > 2.3) {
+            color = vec3(0.00, 0.98, 1.00); // near-cyan
+        } else if (value > 1.9) {
+            color = vec3(0.20, 1.00, 1.00); // bright low band
         }
-
+ 
         gl_FragColor = vec4(color, 1.0);
     }
 `;
