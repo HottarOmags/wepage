@@ -220,6 +220,7 @@ const EFFECT_ORDER = [
     'RotoZoomer',
     'Wave Distortion',
     'Kaleidoscope Tunnel',
+    'Ember Flock',
     'Voronoi Flow',
     'Particle Vector Field',
 ];
@@ -1844,6 +1845,196 @@ effects.push(hexLatticeWarp);
         if (!EFFECT_ORDER.includes(name)) {
             EFFECT_ORDER.push(name);
         }
+    }
+    applyEffectOrder();
+})();
+
+// --- Effect: Ember Flock (brand-new warm ember swarm) ---
+const emberFlock = {};
+emberFlock.vsSource = quadVS;
+emberFlock.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i+vec2(1.0,0.0));
+        float c = hash(i+vec2(0.0,1.0));
+        float d = hash(i+vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for (int i=0;i<5;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Warm blackbody-like palette: deep maroon -> crimson -> orange -> amber
+    vec3 emberPalette(float t){
+        t = clamp(t, 0.0, 1.0);
+        vec3 c1 = vec3(0.14, 0.03, 0.02);
+        vec3 c2 = vec3(0.75, 0.16, 0.06);
+        vec3 c3 = vec3(1.00, 0.55, 0.12);
+        vec3 c4 = vec3(1.00, 0.86, 0.30);
+        vec3 a = mix(c1, c2, smoothstep(0.00, 0.35, t));
+        vec3 b = mix(c3, c4, smoothstep(0.35, 1.00, t));
+        return mix(a, b, smoothstep(0.25, 0.95, t));
+    }
+
+    float softKernel(vec2 p, float r){
+        float d2 = dot(p,p);
+        return exp(-d2 / (r*r));
+    }
+
+    vec3 renderEmbers(vec2 uv, float t){
+        vec2 p = uv;
+        p.x *= u_resolution.x / u_resolution.y;
+
+        // Global turbulent flow
+        vec2 flow = vec2(
+            fbm(p*0.7 + vec2( t*0.18, -t*0.12 )),
+            fbm(p*0.7 + vec2(-t*0.15,  t*0.14 ))
+        );
+        float ang = 0.35 * sin(t*0.25) + 0.25*sin(t*0.11);
+        mat2 R = mat2(cos(ang), -sin(ang), sin(ang), cos(ang));
+        vec2 q = R * (p + (flow - 0.5)*0.9);
+
+        float glow = 0.0;
+        float core = 0.0;
+
+        // Layer 1 (coarse)
+        {
+            vec2 gp = q * 3.0;
+            vec2 cell = floor(gp);
+            vec2 f = fract(gp);
+            for (int j=0;j<2;j++){
+                for (int i=0;i<2;i++){
+                    vec2 o = vec2(float(i), float(j));
+                    vec2 id = cell + o;
+                    float s = hash(id);
+                    vec2 jitter = vec2(sin(s*87.0), cos(s*113.0));
+                    vec2 center = (o + 0.5 + 0.35*jitter) / 3.0;
+                    center += 0.08*vec2(sin(t*0.9 + s*17.0), cos(t*0.8 + s*23.0));
+                    vec2 d = f - (center);
+                    float k = softKernel(d, 0.22);
+                    glow += k * (0.8 + 0.2*sin(t*2.0 + s*31.0));
+                    core += k*k;
+                }
+            }
+        }
+        // Layer 2 (medium)
+        {
+            vec2 gp = q * 6.0 + 2.7;
+            vec2 cell = floor(gp);
+            vec2 f = fract(gp);
+            for (int j=0;j<2;j++){
+                for (int i=0;i<2;i++){
+                    vec2 o = vec2(float(i), float(j));
+                    vec2 id = cell + o;
+                    float s = hash(id + 101.3);
+                    vec2 jitter = vec2(sin(s*55.0), cos(s*71.0));
+                    vec2 center = (o + 0.5 + 0.45*jitter) / 6.0;
+                    center += 0.12*vec2(sin(t*1.2 + s*13.0), cos(t*1.15 + s*19.0));
+                    vec2 d = f - (center);
+                    float k = softKernel(d, 0.18);
+                    glow += k * (0.7 + 0.3*sin(t*2.6 + s*41.0));
+                    core += k*k*1.3;
+                }
+            }
+        }
+        // Layer 3 (fine)
+        {
+            vec2 gp = q * 12.0 - 1.9;
+            vec2 cell = floor(gp);
+            vec2 f = fract(gp);
+            for (int j=0;j<2;j++){
+                for (int i=0;i<2;i++){
+                    vec2 o = vec2(float(i), float(j));
+                    vec2 id = cell + o;
+                    float s = hash(id + 407.7);
+                    vec2 jitter = vec2(sin(s*93.0), cos(s*131.0));
+                    vec2 center = (o + 0.5 + 0.55*jitter) / 12.0;
+                    center += 0.16*vec2(sin(t*1.7 + s*29.0), cos(t*1.6 + s*37.0));
+                    vec2 d = f - (center);
+                    float k = softKernel(d, 0.13);
+                    glow += k * (0.55 + 0.45*sin(t*3.3 + s*73.0));
+                    core += k*k*1.6;
+                }
+            }
+        }
+
+        glow = clamp(glow*0.9, 0.0, 3.0);
+        core = clamp(core*1.4, 0.0, 3.0);
+
+        float heat = clamp(0.35*glow + 0.65*core, 0.0, 1.5);
+        float tcol = smoothstep(0.0, 1.2, heat);
+
+        vec3 col = emberPalette(tcol);
+        vec3 coreCol = emberPalette(min(1.0, tcol*1.25));
+        col = mix(col, coreCol, clamp(core*0.5, 0.0, 0.7));
+
+        float flick = 0.92 + 0.08*sin(t*7.0 + fbm(p*4.0 + t)*6.2831);
+        col *= flick;
+
+        float vig = 0.92 - 0.55*dot(uv, uv);
+        col *= clamp(vig, 0.25, 1.0);
+
+        float scan = 0.018 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        col += vec3(scan) * 0.015;
+
+        return col;
+    }
+
+    void main(){
+        vec2 uv = gl_FragCoord.xy / u_resolution;
+        vec2 p = uv * 2.0 - 1.0;
+        float t = u_time;
+        vec3 col = renderEmbers(p, t);
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+emberFlock.init = () => {
+    emberFlock.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, emberFlock.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, emberFlock.fsSource)
+    );
+    gl.useProgram(emberFlock.program);
+    emberFlock.positionAttributeLocation = gl.getAttribLocation(emberFlock.program, 'a_position');
+    emberFlock.resolutionUniformLocation = gl.getUniformLocation(emberFlock.program, 'u_resolution');
+    emberFlock.timeUniformLocation = gl.getUniformLocation(emberFlock.program, 'u_time');
+};
+emberFlock.draw = (time) => {
+    gl.useProgram(emberFlock.program);
+    gl.uniform2f(emberFlock.resolutionUniformLocation, canvas.width, canvas.height);
+    gl.uniform1f(emberFlock.timeUniformLocation, time / 1000.0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(emberFlock.positionAttributeLocation);
+    gl.vertexAttribPointer(emberFlock.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+emberFlock.name = 'Ember Flock';
+effects.push(emberFlock);
+
+// Ensure Ember Flock is first in the centralized order
+(function ensureEmberOrderFirst(){
+    const name = 'Ember Flock';
+    const idx = EFFECT_ORDER.indexOf(name);
+    if (idx === -1) {
+        EFFECT_ORDER.unshift(name);
+    } else if (idx > 0) {
+        EFFECT_ORDER.splice(idx, 1);
+        EFFECT_ORDER.unshift(name);
     }
     applyEffectOrder();
 })();
