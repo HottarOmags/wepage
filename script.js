@@ -502,15 +502,132 @@ colorCycle.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
-    void main() {
-        vec2 uv = gl_FragCoord.xy / u_resolution;
-        
-        // Simple color cycling based on time and position
-        float r = sin(uv.x * 10.0 + u_time * 0.5) * 0.5 + 0.5;
-        float g = sin(uv.y * 10.0 + u_time * 0.7) * 0.5 + 0.5;
-        float b = sin((uv.x + uv.y) * 5.0 + u_time * 0.9) * 0.5 + 0.5;
-        
-        gl_FragColor = vec4(r, g, b, 1.0);
+    // Gentle value noise + fbm (2-3 octaves for softness)
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i+vec2(1.0,0.0));
+        float c = hash(i+vec2(0.0,1.0));
+        float d = hash(i+vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0;
+        float a = 0.5;
+        mat2 m = mat2(1.6,1.2,-1.2,1.6);
+        for(int i=0;i<3;i++){
+            v += a * noise(p);
+            p = m * p;
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Green-centered dreamy palette: deep teal -> jade -> mint -> pale lime
+    vec3 palette(float t){
+        t = clamp(t, 0.0, 1.0);
+        vec3 c1 = vec3(0.04, 0.30, 0.28);
+        vec3 c2 = vec3(0.08, 0.60, 0.40);
+        vec3 c3 = vec3(0.55, 0.95, 0.80);
+        vec3 c4 = vec3(0.85, 1.00, 0.70);
+        vec3 a = mix(c1, c2, smoothstep(0.00, 0.40, t));
+        vec3 b = mix(c2, c3, smoothstep(0.30, 0.80, t));
+        vec3 c = mix(c3, c4, smoothstep(0.70, 1.00, t));
+        return mix(mix(a, b, 0.6), c, smoothstep(0.65, 1.0, t));
+    }
+
+    float softCircle(vec2 p, float r){
+        float d = length(p);
+        return exp(- (d*d) / (r*r));
+    }
+
+    mat2 rot(float a){ return mat2(cos(a), -sin(a), sin(a), cos(a)); }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = gl_FragCoord.xy / R;
+
+        // Centered aspect-corrected coords
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= R.x / R.y;
+
+        float t = u_time;
+
+        // Stronger sense of motion: add slow global rotation
+        float ang = 0.10*sin(t*0.30) + 0.07*sin(t*0.17);
+        p = rot(ang) * p;
+
+        // Domain warps (slightly stronger)
+        vec2 w1 = vec2(
+            fbm(p*0.9 + vec2( 0.14*t, -0.10*t)),
+            fbm(p*0.9 + vec2(-0.11*t,  0.12*t))
+        ) - 0.5;
+        vec2 w2 = vec2(
+            fbm(p*1.7 + vec2( 0.22*t,  0.18*t)),
+            fbm(p*1.7 + vec2(-0.19*t, -0.16*t))
+        ) - 0.5;
+
+        vec2 q = p + 0.32*w1 + 0.16*w2;
+        q.y += 0.10*sin(t*0.36) + 0.07*sin(q.x*1.7 - t*0.42);
+
+        // Ribbons: increase contrast and amplitude for more activity
+        float rib = 0.5 + 0.5*sin(q.y*2.6 + 1.0*sin(q.x*1.05) - t*0.55);
+        rib = smoothstep(0.20, 0.80, rib);
+        float ribEdge = smoothstep(0.70, 0.98, rib); // soft contour accent
+
+        // Tone in green family with a bit more variation
+        float tone = 0.55
+                   + 0.26*fbm(q*0.95 + vec2(0.16*t, -0.12*t))
+                   + 0.20*sin(0.60*q.x - 0.42*q.y + 0.34*t);
+        tone = clamp(tone, 0.0, 1.0);
+
+        vec3 base = palette(tone);
+
+        // Layered glows
+        float g0 = softCircle(q*vec2(0.9,1.1), 1.40);
+        float g1 = softCircle(q + 0.22*vec2(sin(t*0.21), cos(t*0.17)), 1.05);
+        float g2 = softCircle(q - 0.20*vec2(cos(t*0.16), sin(t*0.19)), 0.86);
+
+        vec3 tint1 = palette(clamp(tone*0.80 + 0.12, 0.0, 1.0));
+        vec3 tint2 = palette(clamp(tone*0.60 + 0.28, 0.0, 1.0));
+
+        vec3 col = base * (0.50 + 0.65*rib);       // stronger ribbon influence
+        col += tint1 * g1 * 0.42;
+        col += tint2 * g2 * 0.34;
+        col = mix(col, col * (0.80 + 0.20*g0), 0.58);
+
+        // Subtle contour bands to increase structure without harsh edges
+        float contour = 0.5 + 0.5*sin(length(q)*6.0 - t*0.8);
+        contour = smoothstep(0.40, 0.85, contour);
+        col = mix(col, col * (0.85 + 0.15*contour), 0.5);
+
+        // Keep center softened
+        float center = exp(-dot(p, p) / 0.22);
+        float centerSoft = exp(-dot(p, p) / 0.55);
+        float centerDamp = mix(1.0, 0.78, center);
+        centerDamp = mix(centerDamp, 0.88, centerSoft*0.6);
+        col *= centerDamp;
+
+        // Gentle vertical blur mix for dreaminess (reduced to keep activity visible)
+        vec2 px = 1.0 / R;
+        vec3 nb =
+              palette(clamp(tone + 0.012*fbm((q+vec2(0.0, 2.0*px.y))*1.0), 0.0, 1.0)) * 0.22
+            + palette(clamp(tone + 0.008*fbm((q+vec2(0.0, 1.0*px.y))*1.1), 0.0, 1.0)) * 0.30
+            + col * 0.48;
+        col = mix(col, nb, 0.22);
+
+        // Vignette
+        float vig = 0.97 - 0.42*dot(p, p);
+        col *= clamp(vig, 0.40, 1.0);
+
+        // Very faint film haze
+        float haze = (hash(gl_FragCoord.xy + t) - 0.5) * 0.008;
+        col += vec3(haze) * 0.030;
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
     }
 `;
 
