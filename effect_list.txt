@@ -8,3 +8,4 @@ Effect List:
 6: RotoZoomer
 7: Wave Distortion
 8: Fire Flames (Amiga Demoscene Style)
+9: Amiga Bouncing Ball
