@@ -16,6 +16,7 @@ let fps = 0, fpsAccumTime = 0, fpsFrames = 0, lastFrameTime = performance.now();
 
 
 const EFFECT_ORDER = [
+    'Chromatic Voronoi Bloom',
     'Sine Wave',
     'Starfield',
     'Hyperspace Glyphs',
@@ -3187,7 +3188,10 @@ neonParallaxCity.fsSource = `
             for(int i=-1;i<=1;i++){
                 vec2 cell = vec2(float(i), float(j));
                 vec2 id = floor(bp*3.0) + cell;
-                vec2 rnd = vec2(hash(id), hash(id+37.2));
+                // stable 2D random using two hash() calls
+                float hx = hash(id);
+                float hy = hash(id + vec2(37.2, 91.7));
+                vec2 rnd = vec2(hx, hy);
                 vec2 center = (floor(bp*3.0) + cell + 0.5 + (rnd-0.5)*0.35) / 3.0;
                 vec2 lp = bp - center;
                 float ang = 3.14159 * (rnd.x - 0.5) + 0.3*sin(t*0.7 + dot(id, vec2(0.7,1.3)));
@@ -3200,7 +3204,6 @@ neonParallaxCity.fsSource = `
                 float hue = fract(0.3 + 0.4*rnd.x + 0.3*sin(t*0.25 + rnd.y*6.0));
                 vec3 c = palette(hue);
                 vec3 sCol = c * (edge*1.2 + glow*0.6);
-                // depth fade based on screen y
                 float df = smoothstep(-0.8, 0.4, p.y);
                 sCol *= df;
                 float w = exp(-6.0*dot(lp, lp));
@@ -3256,6 +3259,210 @@ neonParallaxCity.name = 'Neon Parallax City';
 effects.push(neonParallaxCity);
 
 // Removed per-effect insertion; centralized array defines order
+
+// --- Effect: Chromatic Voronoi Bloom (brand-new volumetric demoscene effect) ---
+const chromaticVoronoiBloom = {};
+chromaticVoronoiBloom.vsSource = quadVS;
+chromaticVoronoiBloom.fsSource = `
+    precision highp float;
+    uniform vec2 u_resolution;
+    uniform float u_time;
+    uniform vec2 u_rot; // precomputed cos,sin for a small shared rotation
+
+    // Cheap hash/noise
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        f = f*f*(3.0-2.0*f);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0,0.0));
+        float c = hash(i + vec2(0.0,1.0));
+        float d = hash(i + vec2(1.0,1.0));
+        return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+    }
+
+    // Single-cell nearest distance in 2D (3x3 neighborhood), returns squared distance (no sqrt)
+    float nearest2_sq(vec2 q){
+        vec2 g = floor(q);
+        vec2 f = fract(q);
+        float dmin = 1e9;
+        for(int j=-1;j<=1;j++){
+            for(int i=-1;i<=1;i++){
+                vec2 o = vec2(float(i), float(j));
+                vec2 id = g + o;
+                vec2 r = o + vec2(hash(id), hash(id+vec2(7.3,11.1))) - f;
+                float d = dot(r,r);
+                dmin = min(dmin, d);
+            }
+        }
+        return dmin; // keep squared
+    }
+
+    // 3 projected planes, but avoid trig by using shared u_rot for both rotations
+    // We rotate p.xy and p.yz with same 2x2 rot matrix to approximate tri-planar symmetry
+    float voronoiTri(vec3 p){
+        // small scale to keep cells visible
+        const float scale = 1.15;
+        vec2 cs = u_rot;          // cs.x = cos, cs.y = sin
+        mat2 R = mat2(cs.x, -cs.y, cs.y, cs.x);
+
+        vec2 p1 = p.xy * scale;
+        vec2 p2 = (R * p.yz) * scale;
+        vec2 p3 = (R * p.xz) * scale;
+
+        float d1 = nearest2_sq(p1);
+        float d2 = nearest2_sq(p2);
+        float d3 = nearest2_sq(p3);
+
+        // use min of squared distances; map to edge metric without sqrt
+        float dm = min(d1, min(d2, d3));
+        // edge when near sites: dm small -> strong edge. Use smooth window on squared domain.
+        float edge = 1.0 - smoothstep(0.018, 0.14, dm);
+        return edge;
+    }
+
+    // Main marcher: add interest with layered neon edges, soft rim and occasional streaks
+    vec3 marchFoam(vec3 ro, vec3 rd, float t){
+        float total = 0.0;
+        vec3 col = vec3(0.0);
+        float glow = 0.0;
+
+        // jitter start
+        float seed = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + t*37.2) * 43758.5453);
+        total += seed * 0.04;
+
+        // 36 steps max
+        for(int i=0;i<36;i++){
+            vec3 pos = ro + rd * total;
+
+            // 2-tap domain warp (very cheap)
+            float w1 = noise(pos.xy*0.85 + vec2(0.17*t, -0.13*t));
+            float w2 = noise(pos.zy*0.85 + vec2(-0.15*t, 0.19*t));
+            pos += 0.40 * vec3(w1 - 0.5, w2 - 0.5, (w1 + w2)*0.18);
+
+            // tri-planar voronoi base edge density
+            float edge = voronoiTri(pos);
+
+            // Secondary thinner edge layer for sparkle
+            float edgeThin = smoothstep(0.015, 0.06, edge) * (1.0 - smoothstep(0.35, 0.9, edge));
+
+            // Flow phase to animate color and streaks
+            float phase = pos.x*0.42 - pos.y*0.33 + pos.z*0.28 + t*0.6;
+
+            // adaptive step: go faster in empty space, slower near edges
+            float dStep = mix(0.048, 0.18, 1.0 - edge);
+            total += dStep;
+
+            // base palette sweep
+            float hue = 0.5 + 0.5 * sin(phase);
+            vec3 baseA = vec3(0.05,0.90,1.00);
+            vec3 baseB = vec3(0.95,0.20,1.00);
+            vec3 base = mix(baseA, baseB, hue);
+
+            // subtle tri-hue shift for richness
+            vec3 accent = mix(vec3(1.00,0.75,0.20), vec3(0.20,1.00,0.75), 0.5 + 0.5*sin(phase*0.7));
+
+            // pulse to keep motion lively
+            float pulse = 0.65 + 0.35 * sin(0.8*t + pos.x*0.7 + pos.y*0.9 + pos.z*0.5);
+
+            // neon edge with accent mix
+            float cEdge = edge * (0.030 + 0.045*pulse);
+            vec3 c1 = base * cEdge * 0.65;
+            vec3 c2 = accent * edgeThin * 0.25;
+
+            // no flashing/glitch streaks per request
+            vec3 contribCol = c1 + c2;
+            col += contribCol;
+            glow += (cEdge + edgeThin*0.02) * 0.55;
+
+            // Early outs: keep thresholds low for speed
+            if (glow > 0.52 || total > 5.2) break;
+        }
+
+        vec3 bg = vec3(0.01, 0.015, 0.03);
+        col = mix(bg, col, clamp(glow*1.35, 0.0, 1.0));
+        col += vec3(glow) * 0.22; // subtle bloom-ish
+
+        return col;
+    }
+
+    // Cheap chromatic aberration: slight, time-varying skew for liveliness
+    vec3 chromaSkew(vec3 c){
+        float k = 0.012 + 0.006*sin(u_time*0.9);
+        float k2 = 0.010 + 0.005*cos(u_time*0.7);
+        mat3 M = mat3(
+            1.00,   k,   0.0,
+           -k2,   0.99,  k,
+            0.0,  -k2,  1.00
+        );
+        return clamp(M * c, 0.0, 1.0);
+    }
+
+    void main(){
+        vec2 R = u_resolution;
+        vec2 uv = (gl_FragCoord.xy / R)*2.0 - 1.0;
+        uv.x *= R.x / R.y;
+
+        float t = u_time * 0.82;
+
+        // camera
+        float r = 3.6;
+        vec3 ro = vec3(0.0, 0.35 + 0.2*sin(t*0.38), -r);
+        vec3 ta = vec3(0.0, 0.0, 0.0);
+
+        vec3 ww = normalize(ta - ro);
+        vec3 uu = normalize(cross(vec3(0.0,1.0,0.0), ww));
+        vec3 vv = cross(ww, uu);
+
+        float fov = 1.12;
+        vec3 rd = normalize(uu*uv.x + vv*uv.y + ww*fov);
+
+        vec3 col = marchFoam(ro, rd, t);
+
+        // vignette
+        float vig = 0.94 - 0.50*dot(uv, uv);
+        col *= clamp(vig, 0.30, 1.0);
+
+        // scanline + grain (cheap)
+        float scan = 0.008 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
+        col += vec3(scan) * 0.006;
+        float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + t*29.2)*43758.5453) - 0.5;
+        col += vec3(grain) * 0.004;
+
+        // single-pass chroma approximation
+        col = chromaSkew(col);
+
+        gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+`;
+chromaticVoronoiBloom.init = () => {
+    chromaticVoronoiBloom.program = createProgram(gl,
+        createShader(gl, gl.VERTEX_SHADER, chromaticVoronoiBloom.vsSource),
+        createShader(gl, gl.FRAGMENT_SHADER, chromaticVoronoiBloom.fsSource)
+    );
+    gl.useProgram(chromaticVoronoiBloom.program);
+    chromaticVoronoiBloom.positionAttributeLocation = gl.getAttribLocation(chromaticVoronoiBloom.program, 'a_position');
+    chromaticVoronoiBloom.resolutionUniformLocation = gl.getUniformLocation(chromaticVoronoiBloom.program, 'u_resolution');
+    chromaticVoronoiBloom.timeUniformLocation = gl.getUniformLocation(chromaticVoronoiBloom.program, 'u_time');
+    chromaticVoronoiBloom.rotUniformLocation = gl.getUniformLocation(chromaticVoronoiBloom.program, 'u_rot');
+};
+chromaticVoronoiBloom.draw = (time) => {
+    gl.useProgram(chromaticVoronoiBloom.program);
+    gl.uniform2f(chromaticVoronoiBloom.resolutionUniformLocation, canvas.width, canvas.height);
+    const t = time / 1000.0;
+    gl.uniform1f(chromaticVoronoiBloom.timeUniformLocation, t);
+    // precompute a tiny shared rotation angle once per frame for shader
+    const ang = 0.18 * Math.sin(t*0.23) + 0.12 * Math.sin(t*0.11);
+    gl.uniform2f(chromaticVoronoiBloom.rotUniformLocation, Math.cos(ang), Math.sin(ang));
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.enableVertexAttribArray(chromaticVoronoiBloom.positionAttributeLocation);
+    gl.vertexAttribPointer(chromaticVoronoiBloom.positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+};
+chromaticVoronoiBloom.name = 'Chromatic Voronoi Bloom';
+effects.push(chromaticVoronoiBloom);
 
 // Removed per-effect ensure; centralized array already lists all
 // --- Main Animation Loop ---
@@ -3319,6 +3526,8 @@ window.addEventListener('resize', () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
     // No need to re-init effects on resize, just update uniforms in draw
+    if (gl) gl.viewport(0, 0, canvas.width, canvas.height);
+    // Also update projection-dependent effects state lazily on next draw
 });
 
 
