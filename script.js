@@ -64,8 +64,15 @@ let startTime = performance.now();
 const effectDuration = 5000; // 5 seconds per effect
 
 function nextEffect() {
+    if (!effects.length) {
+        console.warn('No effects available to switch.');
+        return;
+    }
     currentEffectIndex = (currentEffectIndex + 1) % effects.length;
-    effects[currentEffectIndex].init(); // Re-initialize the new effect
+    const eff = effects[currentEffectIndex];
+    if (eff && typeof eff.init === 'function') {
+        eff.init(); // Re-initialize the new effect
+    }
     startTime = performance.now(); // Reset timer on manual switch
     updateEffectIndicator(); // Update the indicator
     console.log('Switched to effect:', currentEffectIndex);
@@ -1330,11 +1337,34 @@ function animateEffects(currentTime) {
         nextEffect(); // Move to next effect instead of resetting to first
     }
 
-    effects[currentEffectIndex].draw(currentTime);
+    if (effects.length) {
+        const eff = effects[currentEffectIndex];
+        if (eff && typeof eff.draw === 'function') {
+            eff.draw(currentTime);
+        }
+    }
 }
 
 // --- Simple Mouse Click Handler ---
-canvas.addEventListener('click', nextEffect);
+canvas.style.pointerEvents = 'auto';
+canvas.addEventListener('click', (e) => {
+    e.preventDefault();
+    nextEffect();
+});
+
+// Fallback: if canvas is under other elements (z-index -1), allow page clicks to advance effect
+document.addEventListener('click', (e) => {
+    // Ignore clicks on navigation links to preserve anchor behavior
+    const target = e.target;
+    if (target && target.closest && target.closest('a')) {
+        return;
+    }
+    // If click did not happen on the effect indicator (which has pointer-events: none, but guard anyway)
+    if (effectIndicator && effectIndicator.contains && effectIndicator.contains(target)) {
+        return;
+    }
+    nextEffect();
+}, true);
 
 // --- Initialization ---
 window.addEventListener('resize', () => {
@@ -1362,11 +1392,27 @@ document.body.appendChild(effectIndicator);
 
 // Update effect indicator
 function updateEffectIndicator() {
-    const effectNames = ['Starfield', 'Plasma', 'Sine Wave', 'Color Cycle', 'Tunnel', 'Metaballs', 'RotoZoomer', 'Wave Distortion', 'Fire', 'Physics Balls'];
-    effectIndicator.textContent = `Effect: ${effectNames[currentEffectIndex]} (${currentEffectIndex + 1}/${effects.length})`;
+    // Derive names defensively from availability/order
+    const fallbackNames = ['Starfield','Plasma','Sine Wave','Color Cycle','Tunnel','Metaballs','RotoZoomer','Wave Distortion','Fire','Physics Balls'];
+    const names = effects.map((_, i) => fallbackNames[i] ?? `Effect ${i+1}`);
+    const name = names[currentEffectIndex] ?? `Effect ${currentEffectIndex + 1}`;
+    effectIndicator.textContent = `Effect: ${name} (${currentEffectIndex + 1}/${effects.length || 0})`;
 }
 
 // Initial setup for the first effect
-effects[currentEffectIndex].init();
-updateEffectIndicator();
-animateEffects(performance.now());
+if (!gl) {
+    // If WebGL is not available, avoid attaching the loop and clicks
+    effectIndicator.textContent = 'WebGL not supported';
+} else {
+    if (effects.length) {
+        // Ensure we start with a valid effect
+        const eff0 = effects[currentEffectIndex];
+        if (eff0 && typeof eff0.init === 'function') {
+            eff0.init();
+        }
+    } else {
+        console.warn('No effects were registered.');
+    }
+    updateEffectIndicator();
+    animateEffects(performance.now());
+}
