@@ -1200,70 +1200,107 @@ flame2025.fsSource = `
         return col;
     }
 
-    // Signed distance to a rounded cone-like base used for emission source
+    // Base emission profile: stronger at bottom, slower widening; clamp top width
+    // Widened by ~20% to increase base footprint; includes horizontal source offset
     float baseSource(vec2 p){
-        // Source from bottom center; widen with height
-        float y = p.y + 0.95; // lift base just below screen
-        float w = 0.18 + 0.55 * smoothstep(0.0, 1.2, y); // plume widens as it rises
+        // Match the same horizontal offset used in main() so the emission aligns with visible plume
+        float offsetX = 0.25;
+        p.x -= offsetX;
+
+        float y = p.y + 0.95;                  // base sits just below frame
+        // Make base wider, and reduce widening rate with height
+        float baseW = 0.26 * 1.20;             // +20% base width
+        float widen = (0.36 * 1.20) * smoothstep(0.0, 1.0, clamp(y, 0.0, 1.0)); // +20% widen rate
+        float w = baseW + widen;
+        // Soft cap so top doesn't get too wide (also relaxed slightly)
+        w = min(w, 0.52 * 1.10);
         float d = length(vec2(p.x / max(w, 0.001), max(y, 0.0)));
-        return exp(-3.5 * d*d);
+        return exp(-3.0 * d*d);
     }
 
     void main(){
         vec2 uv = gl_FragCoord.xy / u_resolution;
-        vec2 p = uv * 2.0 - 1.0;
+
+        // Center and shrink the flame footprint so it occupies less screen space
+        // scale < 1.0 shrinks; tweak to adjust coverage
+        float scale = 0.60;
+        vec2 p = (uv * 2.0 - 1.0);
         p.x *= u_resolution.x / u_resolution.y;
+        p /= scale;
+
+        // Shift source horizontally to the right to avoid overlapping page text
+        // Positive values move the flame to the right. Adjust offsetX as needed.
+        float offsetX = 0.25; // ~25% of NDC after scaling
+        p.x -= offsetX;
 
         float t = u_time;
 
-        // Upward advection and slight outward curl
-        float rise = t * 0.75;
-        // skew x by y to get outward drift from centerline as it rises
-        float outward = 0.35 * p.y;
-        vec2 flowP = vec2(p.x + outward, p.y + 0.35*fbm(vec2(p.x*1.3, p.y*2.5 + rise*1.2)));
+        // Stronger upward advection, remove downward tendencies
+        float rise = t * 1.05;
 
-        // Domain warps (reduce symmetry by offsetting with time and random phases)
+        // Lateral drift: make base broader, taper as it rises (prevents top overgrowth)
+        // Slightly increase near-base outward factor for wider foot
+        // Also bias drift a bit to the right so tongues lean with the new source
+        float outward = (0.28*1.20 - 0.18 * smoothstep(-0.2, 0.9, p.y)) * p.y + 0.05;
+
+        // Drive vertical samples with negative time bias to force upwards motion
+        vec2 flowP = vec2(
+            p.x + outward,
+            // add slight upward push near base to feed the bottom body
+            p.y + 0.32 * fbm(vec2(p.x*1.25, p.y*2.6 - rise*1.4)) + 0.06 * (1.0 - smoothstep(-0.9, -0.2, p.y))
+        );
+
+        // Domain warps: sample y with (-rise) to advect upwards
         vec2 warp1 = vec2(
-            fbm(vec2(flowP.x*1.35 + 3.7, flowP.y*2.6 + rise*1.3)),
-            fbm(vec2(flowP.x*1.75 + 9.1, flowP.y*2.9 + rise*1.6))
+            fbm(vec2(flowP.x*1.35 + 3.7, flowP.y*2.6 - rise*1.3)),
+            fbm(vec2(flowP.x*1.75 + 9.1, flowP.y*2.9 - rise*1.6))
         );
         vec2 warp2 = vec2(
-            fbm(vec2(flowP.x*3.1 + 17.0 + t*0.27, flowP.y*4.2 + rise*2.1)),
-            fbm(vec2(flowP.x*2.3 + 27.0 - t*0.19, flowP.y*3.6 + rise*1.8))
+            fbm(vec2(flowP.x*3.1 + 17.0 + t*0.27, flowP.y*4.2 - rise*2.1)),
+            fbm(vec2(flowP.x*2.3 + 27.0 - t*0.19, flowP.y*3.6 - rise*1.8))
         );
 
-        // Anisotropic heat shimmer: more vertical, weaker near base to avoid jitter
-        float baseMask = smoothstep(-0.9, -0.2, p.y); // 0 at base, 1 higher up
-        vec2 shimmer = 0.010 * baseMask * vec2(
-            0.6 * sin((p.y + t*1.4)*28.0 + 2.5*fbm(p*5.5 + t)),
-            1.0 * cos((p.x - t*1.1)*24.0 + 2.0*fbm(p*5.0 - t*0.7))
+        // Anisotropic heat shimmer: vertical dominant; keep minimal near base for stability
+        float baseMask = smoothstep(-0.85, -0.15, p.y);
+        vec2 shimmer = 0.007 * baseMask * vec2(
+            0.30 * sin((p.y - t*1.15)*28.0 + 2.2*fbm(p*4.8 - t)),
+            1.00 * cos((p.x - t*1.05)*24.0 + 1.9*fbm(p*4.5 - t*0.7))
         );
 
-        // Combine
-        vec2 q = flowP + shimmer + 0.16*(warp1 - 0.5) + 0.10*(warp2 - 0.5);
+        // Combine (slightly reduce warp amounts to keep footprint compact; stronger at base)
+        float baseBoost = 0.08 * (1.0 - smoothstep(-0.9, -0.2, p.y));
+        vec2 q = flowP + shimmer + (0.14+baseBoost)*(warp1 - 0.5) + (0.09+0.5*baseBoost)*(warp2 - 0.5);
 
         // Emission source from base, not centralizing
         float source = baseSource(q);
 
-        // Upward density: more at base, thinning as it rises (monotonic with y)
-        float dens = smoothstep(-0.95, 0.35, q.y);
+        // Upward density: bias more mass near the base, taper faster up high
+        float dens = smoothstep(-0.95, 0.15, q.y) * (1.0 - 0.35 * smoothstep(0.0, 0.9, q.y));
 
-        // Intensity via layered fbm with vertical advection
-        float f1 = fbm(vec2(q.x*2.2, q.y*4.2 + rise*2.2));
-        float f2 = fbm(vec2(q.x*1.1 + 4.0, q.y*2.0 + rise*1.5));
+        // Intensity via layered fbm with vertical advection (use -rise to bias upwards)
+        float f1 = fbm(vec2(q.x*2.2, q.y*4.2 - rise*2.2));
+        float f2 = fbm(vec2(q.x*1.1 + 4.0, q.y*2.0 - rise*1.5));
         float tongues = 0.6*f1 + 0.4*f2;
-        // add small-scale turbulent flicker that advects upwards
-        float flicker = 0.20 * sin(12.0*q.y - t*7.0 + 6.2831*fbm(q*3.5 + t*0.4));
+        // Small-scale turbulent flicker that travels up (phase uses -t)
+        float flicker = 0.22 * sin(12.0*q.y + t*7.0 + 6.2831*fbm(q*3.5 - t*0.4));
         float intensity = clamp(tongues + flicker, 0.0, 1.0);
-        intensity = pow(intensity, 1.25);
+        intensity = pow(intensity, 1.20);
+        // Prevent any appearance of downward pooling by damping intensity when q.y is low and decreasing
+        float upBias = smoothstep(-0.95, 0.2, q.y);
+        intensity *= upBias;
 
-        // Temperature: base source + density-weighted intensity
-        float temp = 1.25*source + 1.05*dens*intensity;
+        // Temperature: increase base contribution to thicken bottom, and dampen top growth
+        // Boost brightest area by ~20% via higher core feed (source) and mild intensity gain near base
+        float heightDamp = 1.0 - 0.35 * smoothstep(0.1, 0.9, q.y);
+        float baseGain = 1.32 * 1.20; // +20% brighter core feed from base emission
+        float baseIntensityBoost = mix(1.20, 1.0, smoothstep(-0.6, 0.2, q.y)); // extra near base only
+        float temp = (baseGain*source) + (0.95*dens*(intensity*baseIntensityBoost)*heightDamp);
 
-        // Core/mid/glow shaping; reduce overlap for less "vibration"
-        float core = smoothstep(0.62, 0.97, temp);
-        float mid  = smoothstep(0.34, 0.78, temp) * (1.0 - 0.55*core);
-        float glow = smoothstep(0.12, 0.42, temp) * (1.0 - 0.35*mid);
+        // Core/mid/glow shaping; emphasize base fullness and limit top bloom
+        // Lower core threshold slightly so the brightest area spreads ~20% wider
+        float core = smoothstep(0.64, 0.985, temp);
+        float mid  = smoothstep(0.34, 0.80, temp) * (1.0 - 0.55*core);
+        float glow = smoothstep(0.15, 0.44, temp) * (1.0 - 0.38*mid);
 
         // Colorization
         vec3 colCore = firePalette(0.88 + 0.12*temp);
@@ -1280,10 +1317,10 @@ flame2025.fsSource = `
         float haze = 0.018 * sin( q.y*140.0 - t*8.0 + 3.0*fbm(q*6.0 + t) );
         col += vec3(haze);
 
-        // Vignette that favors vertical plume (less darkening at top center)
-        float vigX = 0.95 - 0.55*abs(p.x);
-        float vigY = 0.97 - 0.40*max(0.0, p.y);
-        col *= clamp(min(vigX, vigY), 0.18, 1.0);
+        // Vignette: slightly relax top darkening so the cap doesn’t explode
+        float vigX = 0.96 - 0.55*abs(p.x);
+        float vigY = 0.985 - 0.30*max(0.0, p.y);
+        col *= clamp(min(vigX, vigY), 0.20, 1.0);
 
         // Gentle scanline
         float scan = 0.020 * sin(gl_FragCoord.y * 3.14159 + t * 3.0);
