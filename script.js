@@ -363,7 +363,7 @@ metaballs.fsSource = `
     uniform vec2 u_resolution;
     uniform float u_time;
 
-    const int NUM_BALLS = 4;
+    const int NUM_BALLS = 12;
     uniform vec2 u_ballPositions[NUM_BALLS];
     uniform float u_ballRadii[NUM_BALLS];
 
@@ -377,12 +377,14 @@ metaballs.fsSource = `
         }
 
         vec3 color = vec3(0.0);
-        if (value > 3.0) {
-            color = vec3(0.0, 0.5, 1.0); // Blue
-        } else if (value > 2.0) {
-            color = vec3(0.0, 0.7, 1.0); // Lighter Blue
-        } else if (value > 1.0) {
-            color = vec3(0.0, 0.9, 1.0); // Even Lighter Blue
+        if (value > 6.0) {
+            color = vec3(0.0, 0.2, 1.0); // Blue
+        } else if (value > 4.0) {
+            color = vec3(0.0, 0.4, 1.0); // Lighter Blue
+        } else if (value > 3.0) {
+            color = vec3(0.0, 0.7, 1.0); // Even Lighter Blue
+        } else if (value > 2.0 ) {
+            color = vec3(0.0, 1.0, 1.0); // Even Lighter Blue
         }
 
         gl_FragColor = vec4(color, 1.0);
@@ -403,7 +405,7 @@ metaballs.init = () => {
     metaballs.ballRadiiUniformLocation = gl.getUniformLocation(metaballs.program, 'u_ballRadii');
 
     metaballs.ballData = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 12; i++) {
         metaballs.ballData.push({
             x: Math.random(),
             y: Math.random(),
@@ -679,7 +681,7 @@ physicsBalls.fsSource = `
         vec3 lightDir = normalize(u_lightPosition - v_position);
         
         // Calculate checkered pattern based on world position
-        float patternScale = 2.0;
+        float patternScale = 0.7; // larger checks => fewer visible faces
         vec3 worldPos = v_worldPosition;
         float checkX = mod(floor(worldPos.x * patternScale), 2.0);
         float checkY = mod(floor(worldPos.y * patternScale), 2.0);
@@ -935,7 +937,7 @@ let balls = [];
 let walls = [];
 let camera, renderer, scene;
 let sound1, sound2;
-let sphereDetail = 32;
+let sphereDetail = 16; // fewer segments -> fewer faces
 let numberOfBalls = 1;
 let radius = 2; // Increased ball size
 let mouseImpulse = 0.1;
@@ -1027,9 +1029,9 @@ function init() {
     // Create single red ball with sideways rotation
     const ball = {
         position: new Vec3(0, 0, 0),
-        v: new Vec3(0.03, 0, 0),
+        v: new Vec3(0.12, 0, 0), // faster motion
         rotation: new Vec3(0, 0, Math.PI / 8),
-        w: new Vec3(0, 0.5, 0), // Increased sideways rotation
+        w: new Vec3(0.6, 1.2, 0.4), // stronger multi-axis spin
         r: radius,
         m: 1,
         a: 2 / 3,
@@ -1111,7 +1113,7 @@ function updateBall(ball, deltaTime) {
 }
 
 function updatePhysics() {
-    const deltaTime = controls.Speed * 0.016; // Assuming 60 FPS
+    const deltaTime = controls.Speed * 0.032; // Faster simulation step
     
     // Update each ball
     for (let i = 0; i < numberOfBalls; i++) {
