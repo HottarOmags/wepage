@@ -1009,9 +1009,9 @@ boingBall.init = () => {
     // Animation params
     boingBall.start = performance.now();
     boingBall.rotSpeed = 1.8;   // radians/sec
-    boingBall.bounceH = 3.5;    // height amplitude
-    boingBall.bounceBase = 4.0; // base height
-    boingBall.horzAmp = 2.0;    // subtle horizontal drift
+    boingBall.bounceH = 4.0;    // height amplitude
+    boingBall.bounceBase = 3.0; // base height
+    boingBall.horzAmp = 3.0;    // subtle horizontal drift
     boingBall.lightView = new Float32Array([10, 12, 10]); // simple fixed light in view space
 };
 
@@ -1080,7 +1080,7 @@ boingBall.draw = (tms) => {
     gl.uniformMatrix4fv(boingBall.uMV, false, mv);
     gl.uniformMatrix3fv(boingBall.uNM, false, nrm);
     gl.uniform3fv(boingBall.uLight, boingBall.lightView);
-    gl.uniform1f(boingBall.uBands, 16.0);
+    gl.uniform1f(boingBall.uBands, 12.0);
     gl.uniform1f(boingBall.uGloss, 0.7);
     gl.uniform1f(boingBall.uAmbient, 0.25);
 
