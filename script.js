@@ -3666,21 +3666,29 @@ function animateEffects(currentTime) {
 // --- Simple Mouse Click Handler ---
 canvas.style.pointerEvents = 'auto';
 canvas.addEventListener('click', (e) => {
-    e.preventDefault();
+    // For clicks directly on the canvas, advance the effect.
+    // Do not call preventDefault here, since canvas clicks don't navigate anyway.
     nextEffect();
 });
 
 // Fallback: if canvas is under other elements (z-index -1), allow page clicks to advance effect
 document.addEventListener('click', (e) => {
-    // Ignore clicks on navigation links to preserve anchor behavior
     const target = e.target;
-    if (target && target.closest && target.closest('a')) {
-        return;
-    }
+
     // If click did not happen on the effect indicator (which has pointer-events: none, but guard anyway)
     if (effectIndicator && effectIndicator.contains && effectIndicator.contains(target)) {
         return;
     }
+
+    // If click was on a link, let the navigation/anchor proceed AND also change the effect.
+    // Don't preventDefault so the browser still follows the link or jumps to the hash.
+    const link = target && target.closest && target.closest('a[href]');
+    if (link) {
+        nextEffect();
+        return; // allow default navigation
+    }
+
+    // Otherwise, any page click advances the effect.
     nextEffect();
 }, true);
 
